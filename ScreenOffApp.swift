@@ -122,10 +122,20 @@ final class Model: ObservableObject {
     @Published var message: String?
     /// 實體操作(或手動)恢復螢幕後,在下一次裝置連上 / 移除之前,不會因「斷線」而自動關閉螢幕。
     private var suppressAutoOff = false
-    /// 啟用「外接顯示器連接時,關閉內建顯示器」前的三步確認視窗。
+    /// 啟用「滑鼠移動或連線時也不開啟螢幕」前的三步確認視窗。
     @Published var showKeepOffConfirm = false
     /// 關閉內建螢幕成功的當下是否有外接螢幕(用來判斷之後外接螢幕是不是被移除了)。
     private var hadExternalAtOff = false
+    /// 接上外接顯示器時自動關閉內建顯示器;外接顯示器移除時自動恢復。
+    @Published var closeBuiltInWithExternal = UserDefaults.standard.bool(forKey: "closeBuiltInWithExternal") {
+        didSet {
+            UserDefaults.standard.set(closeBuiltInWithExternal, forKey: "closeBuiltInWithExternal")
+            if closeBuiltInWithExternal { applyExternalRuleNow() } else { closedForExternal = false }
+        }
+    }
+    /// 內建顯示器是被「外接顯示器連接時,關閉內建顯示器」關閉的(只有這種情況外接移除時才自動恢復)。
+    private var closedForExternal = false
+    private var lastExternal = activeExternalDisplayExists()
     /// 啟用後,實體滑鼠 / 觸控板的操作與連線都不會開啟螢幕,也不再強制要求能用實體裝置喚醒(預設關閉)。
     /// 風險:螢幕關閉後本機無法喚醒,只能靠視窗 / Dock 的按鈕、結束 App 或重新開機。
     @Published var keepOffOnInput = UserDefaults.standard.bool(forKey: "keepOffOnInput") {
@@ -211,7 +221,13 @@ final class Model: ObservableObject {
     private var lastPresent = false
 
     /// 啟動時依記住的設定開始監控。
-    func bootstrap() { updateMonitoring() }
+    func bootstrap() {
+        updateMonitoring()
+        // 外接顯示器在啟動時已經連著:等 3 秒(讓「開啟 App 時」的設定先套用)再依選項處理
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            Task { @MainActor in self?.applyExternalRuleNow() }
+        }
+    }
 
     private func updateMonitoring() {
         if onConnectWake || offOnDisconnect { startMonitoring() } else { stopMonitoring() }
@@ -261,12 +277,39 @@ final class Model: ObservableObject {
         toggle()
     }
 
-    /// 安全閥:「外接顯示器連接時,關閉內建顯示器」開啟、且關螢幕時有外接螢幕,之後外接螢幕被移除,
+    /// 安全閥:「滑鼠移動或連線時也不開啟螢幕」開啟、且關螢幕時有外接螢幕,之後外接螢幕被移除,
     /// 就恢復內建螢幕(否則系統會沒有任何螢幕,本機又無法喚醒)。
     func displaysChanged() {
-        guard isOff, keepOffOnInput, hadExternalAtOff, !activeExternalDisplayExists() else { return }
-        message = "外接螢幕已移除,已恢復內建螢幕。"
-        wake()
+        let external = activeExternalDisplayExists()
+        let previous = lastExternal
+        lastExternal = external
+        if isOff, keepOffOnInput, hadExternalAtOff, !external {
+            message = "外接螢幕已移除,已恢復內建螢幕。"
+            wake()
+            return
+        }
+        // 「外接顯示器連接時,關閉內建顯示器」:只對外接顯示器的有 / 無變化反應。
+        // (若每次組態變動都檢查,手動喚醒內建顯示器後會立刻又被關掉。)
+        guard closeBuiltInWithExternal, external != previous else { return }
+        if external {
+            closeForExternal()
+        } else if isOff && closedForExternal {
+            message = "外接顯示器已移除,已恢復內建顯示器。"
+            wake()
+        }
+    }
+
+    /// 開啟選項、或啟動時外接顯示器已連著:依狀態處理一次。
+    private func applyExternalRuleNow() {
+        guard closeBuiltInWithExternal, activeExternalDisplayExists() else { return }
+        closeForExternal()
+    }
+
+    private func closeForExternal() {
+        guard !isOff, !busy else { return }
+        closedForExternal = true
+        toggle()                      // 與手動關閉相同,仍受「必須能用實體裝置喚醒」等限制
+        if !isOff { closedForExternal = false }
     }
 
     /// 由實體滑鼠 / 觸控板操作觸發的還原;啟用 `keepOffOnInput` 時忽略。
@@ -278,6 +321,7 @@ final class Model: ObservableObject {
     /// 還原內建螢幕(視窗、Dock 選單、實體滑鼠皆走這裡)。
     func wake() {
         guard isOff else { return }
+        closedForExternal = false
         suppressAutoOff = true
         MouseWatcher.shared.stop()
         PanelController.shared.restore()
@@ -462,7 +506,7 @@ struct ContentView: View {
                         }
                     ))
                     Toggle("斷線時自動關閉螢幕", isOn: $model.offOnDisconnect)
-                    Toggle("外接顯示器連接時,關閉內建顯示器", isOn: Binding(
+                    Toggle("滑鼠移動或連線時也不開啟螢幕", isOn: Binding(
                         get: { model.keepOffOnInput },
                         set: { on in
                             if on { model.showKeepOffConfirm = true } else { model.keepOffOnInput = false }
@@ -472,6 +516,15 @@ struct ContentView: View {
                     Text("連線偵測")
                 } footer: {
                     Text("依實體滑鼠 / 觸控板(藍牙或有線)的連線狀態自動切換。")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Section {
+                    Toggle("外接顯示器連接時,關閉內建顯示器", isOn: $model.closeBuiltInWithExternal)
+                } header: {
+                    Text("外接顯示器")
+                } footer: {
+                    Text("接上外接顯示器時自動關閉內建顯示器,外接顯示器移除後自動恢復。")
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -499,7 +552,7 @@ struct ContentView: View {
                     onCancel: { model.showKeepOffConfirm = false }
                 )
             }
-            .frame(height: 350)
+            .frame(height: 460)
 
             Text(model.keepOffOnInput
                  ? "本機喚醒已停用:移動滑鼠或連線都不會開啟螢幕。請用遠端按「重新開啟螢幕」或結束 App 恢復。"
@@ -514,7 +567,7 @@ struct ContentView: View {
     }
 }
 
-/// 啟用「外接顯示器連接時,關閉內建顯示器」前的三步確認。任何一步都可以取消。
+/// 啟用「滑鼠移動或連線時也不開啟螢幕」前的三步確認。任何一步都可以取消。
 struct KeepOffConfirmView: View {
     let onConfirm: () -> Void
     let onCancel: () -> Void

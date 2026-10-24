@@ -63,7 +63,7 @@ CLAUDE.md              專案規則
   一個裝置都沒有時不會有事件,所以 4 秒時若沒有裝置就依 `offOnDisconnect` 評估一次。
 - `suppressAutoOff`:`wake()` 成功時設為 true(實體滑鼠 / 觸控板操作、手動按鈕都算),斷線關閉在它為 true 時不動作,
   直到下一次有 / 無狀態變化才清除,避免「有人實際操作但系統判定沒有裝置」時來回開關。
-- `keepOffOnInput`(`UserDefaults` 的 `keepOffOnInput`,預設關閉,視窗「外接顯示器連接時,關閉內建顯示器」):開啟後
+- `keepOffOnInput`(`UserDefaults` 的 `keepOffOnInput`,預設關閉,視窗「滑鼠移動或連線時也不開啟螢幕」):開啟後
   實體操作不會觸發還原(`MouseWatcher` 改呼叫 `wakeByInput()`,它在此選項開啟時直接返回)、連線也不會 `wake()`
   (`presenceChanged()` 檢查),且 `toggle()` 不再要求 `MouseWatcher.start()` 成功。這是刻意放寬「必須能用實體裝置喚醒」的選項,
   所以開啟(關閉到開啟)必須通過 `KeepOffConfirmView` 的三步確認 sheet(`showKeepOffConfirm`),任一步可取消;
@@ -72,6 +72,16 @@ CLAUDE.md              專案規則
     `displaysChanged()` 在 `isOff`、`keepOffOnInput`、`hadExternalAtOff` 都成立、但外接螢幕已不存在時,
     顯示「外接螢幕已移除,已恢復內建螢幕」並 `wake()`,避免變成沒有任何螢幕。選項沒開、或關螢幕時本來就沒有外接螢幕,都不會觸發。
     已知風險:螢幕共享期間系統若建立虛擬顯示器,可能被當成外接螢幕。
+- `closeBuiltInWithExternal`(`UserDefaults` 的 `closeBuiltInWithExternal`,預設關閉,視窗「外接顯示器」區的開關
+  「外接顯示器連接時,關閉內建顯示器」):接上外接顯示器時自動關閉內建顯示器,移除時自動恢復。
+  - `displaysChanged()`(由 `DisplayWatcher` 在顯示器組態變動後呼叫)比較 `activeExternalDisplayExists()` 與上次的 `lastExternal`,
+    只對外接顯示器的有 / 無「變化」反應:從無到有 → `closeForExternal()`;從有到無且 `isOff && closedForExternal` → `wake()`。
+    不能在每次組態變動都檢查,否則手動喚醒內建顯示器後會立刻又被關掉。
+  - `applyExternalRuleNow()`:狀態式的一次處理,在選項從關到開時、以及 `bootstrap()` 啟動 3 秒後(外接顯示器已連著、
+    讓「開啟 App 時」的設定先套用)呼叫;因此「開啟 App 時 = 開啟螢幕」遇到已連接的外接顯示器仍會被這個選項關閉。
+  - `closeForExternal()`:設 `closedForExternal = true` 後呼叫 `toggle()`(與手動關閉相同,仍要求 `MouseWatcher` 可啟動,
+    除非 `keepOffOnInput` 開啟);關閉失敗就清掉旗標。`closedForExternal` 記錄「是這個選項關的」,任何 `wake()` 都會清除,
+    所以手動關閉的內建顯示器不會在外接顯示器移除時被自動開回來。關閉選項時只清旗標,不改變目前的螢幕狀態。
 - `isOff` 每次變動都寫入 `UserDefaults` 的 `lastWasOff`;結束 App 時面板雖會被恢復,但這個記錄不會被清掉,
   供「恢復上次退出時的狀態」使用。
 - `launchBehavior`(`LaunchBehavior`:`restoreLast` / `screenOn` / `screenOff`,存於 `UserDefaults` 的 `launchBehavior`,
@@ -112,8 +122,8 @@ CLAUDE.md              專案規則
 - `ScreenOffApp`(`@main`):`init()` 先跑 `runWatchdogIfRequested()`;場景為 `WindowGroup`(固定內容大小視窗),
   不再使用選單列項目。以 `@NSApplicationDelegateAdaptor` 掛上 `AppDelegate`。
 - `ContentView`:上方是狀態圖示(`display` / `display.slash`)、狀態文字、切換按鈕(忙碌時停用)與錯誤訊息;
-  下方是分組列表(`Form` + `.formStyle(.grouped)` + `.toggleStyle(.switch)`):「連線偵測」區有「連線時自動開啟螢幕」、「斷線時自動關閉螢幕」與「外接顯示器連接時,關閉內建顯示器」(後者啟用時彈出三步確認的 `KeepOffConfirmView`),「啟動」區有「登入時開啟 App(隱藏視窗)」開關與「開啟 App 時」選單。
-  說明文字都加上 `fixedSize(horizontal: false, vertical: true)` 以換行顯示,避免被截成「…」;視窗寬 400,列表固定高 350。
+  下方是分組列表(`Form` + `.formStyle(.grouped)` + `.toggleStyle(.switch)`):「連線偵測」區有「連線時自動開啟螢幕」、「斷線時自動關閉螢幕」與「滑鼠移動或連線時也不開啟螢幕」(後者啟用時彈出三步確認的 `KeepOffConfirmView`),「外接顯示器」區有「外接顯示器連接時,關閉內建顯示器」開關,「啟動」區有「登入時開啟 App(隱藏視窗)」開關與「開啟 App 時」選單。
+  說明文字都加上 `fixedSize(horizontal: false, vertical: true)` 以換行顯示,避免被截成「…」;視窗寬 400,列表固定高 460。
 
 ### PanelController(單例)
 - 停用 / 恢復內建面板的核心,不建立虛擬顯示器。
@@ -149,3 +159,5 @@ CLAUDE.md              專案規則
 5. 下次啟動 → `restore()` 依 `UserDefaults` 記錄再恢復一次(保險)。
 6. `keepOffOnInput` 開啟時,實體操作與裝置連線都不會觸發 `wake()`;能恢復的只剩視窗 / Dock 的按鈕、結束 App、
    看門狗與下次啟動時的 `restore()`;另外,關螢幕時若有外接螢幕而它之後被移除,`displaysChanged()` 會自動恢復內建螢幕。
+7. 「外接顯示器連接時,關閉內建顯示器」開啟時:外接顯示器連上(或啟動 / 開啟選項時已連著)→ `closeForExternal()` → `toggle()` 關閉內建顯示器;
+   外接顯示器移除且內建顯示器是被這個選項關閉的 → `wake()` 恢復。
