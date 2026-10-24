@@ -1,4 +1,5 @@
 import SwiftUI
+import ServiceManagement
 import CoreGraphics
 import IOKit.hid
 import IOKit.pwr_mgt
@@ -33,7 +34,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 上次被 pkill / 崩潰而沒恢復時,啟動就把記錄中被停用的內建面板重新啟用
         PanelController.shared.restore()
-        Task { @MainActor in Model.shared.bootstrap() }
+        Task { @MainActor in
+            Model.shared.bootstrap()
+            Model.shared.applyLaunchBehavior()
+        }
+        // 由「登入項目」啟動時隱藏視窗(Dock 圖示仍在,點它可再顯示)。
+        // 以啟動事件的 'prdt' 屬性是否為 'lgit'(launched as login item)判斷。
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        if event?.paramDescriptor(forKeyword: 0x70726474)?.enumCodeValue == 0x6C676974 {
+            for delay in [0.3, 1.0, 2.5] { DispatchQueue.main.asyncAfter(deadline: .now() + delay) { NSApp.hide(nil) } }
+        }
         // pkill(SIGTERM)不會呼叫 applicationWillTerminate,所以自己攔截並先恢復螢幕
         for sig in [SIGTERM, SIGINT, SIGHUP] {
             signal(sig, SIG_IGN)
@@ -61,11 +71,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleFromDock() { Task { @MainActor in Model.shared.toggle() } }
 }
 
+/// 開啟 App 時的螢幕狀態。
+enum LaunchBehavior: String, CaseIterable, Identifiable {
+    case restoreLast, screenOn, screenOff
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .restoreLast: "恢復上次退出時的狀態"
+        case .screenOn: "開啟螢幕"
+        case .screenOff: "關閉螢幕"
+        }
+    }
+}
+
 /// 狀態與動作,視窗、Dock 選單與實體滑鼠偵測共用。
 @MainActor
 final class Model: ObservableObject {
     static let shared = Model()
-    @Published var isOff = false
+    /// 記住最後一次的狀態,供「恢復上次退出時的狀態」使用(退出時雖然會恢復面板,記錄仍保留關閉狀態)。
+    @Published var isOff = false { didSet { UserDefaults.standard.set(isOff, forKey: "lastWasOff") } }
     @Published var busy = false
     @Published var message: String?
     /// 實體操作(或手動)恢復螢幕後,在下一次裝置連上 / 移除事件之前,自動模式不再關閉螢幕。
@@ -73,6 +97,26 @@ final class Model: ObservableObject {
     /// 自動模式下,實體滑鼠 / 觸控板全部斷線時是否關閉螢幕(連線時一律會開啟)。
     @Published var offOnDisconnect = (UserDefaults.standard.object(forKey: "offOnDisconnect") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(offOnDisconnect, forKey: "offOnDisconnect") }
+    }
+    @Published var launchBehavior = LaunchBehavior(rawValue: UserDefaults.standard.string(forKey: "launchBehavior") ?? "") ?? .restoreLast {
+        didSet { UserDefaults.standard.set(launchBehavior.rawValue, forKey: "launchBehavior") }
+    }
+    private var syncingLogin = false
+    /// 登入時開啟 App(以 SMAppService 註冊登入項目;登入啟動時視窗會隱藏)。
+    @Published var launchAtLogin = (SMAppService.mainApp.status == .enabled) {
+        didSet {
+            guard !syncingLogin, launchAtLogin != oldValue else { return }
+            do {
+                if launchAtLogin { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+                if SMAppService.mainApp.status == .requiresApproval {
+                    message = "請到「系統設定 > 一般 > 登入項目與延伸功能」允許 ScreenOff。"
+                    SMAppService.openSystemSettingsLoginItems()
+                }
+            } catch {
+                message = "設定登入時開啟失敗:\(error.localizedDescription)"
+                syncingLogin = true; launchAtLogin = oldValue; syncingLogin = false
+            }
+        }
     }
     @Published var autoMode = UserDefaults.standard.bool(forKey: "autoMode") {
         didSet {
@@ -99,6 +143,21 @@ final class Model: ObservableObject {
                 isOff = PanelController.shared.isActive
                 if !isOff { MouseWatcher.shared.stop() }
             }
+        }
+    }
+
+    /// 啟動時依「開啟 App 時」的設定決定螢幕狀態。AppDelegate 已先恢復面板,這裡延遲 2 秒再套用。
+    func applyLaunchBehavior() {
+        let shouldTurnOff: Bool
+        switch launchBehavior {
+        case .screenOn: shouldTurnOff = false
+        case .screenOff: shouldTurnOff = true
+        case .restoreLast: shouldTurnOff = UserDefaults.standard.bool(forKey: "lastWasOff")
+        }
+        guard shouldTurnOff else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, !self.isOff else { return }
+            self.toggle()
         }
     }
 
@@ -283,7 +342,7 @@ struct ContentView: View {
     @ObservedObject var model: Model
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 12) {
             Image(systemName: model.isOff ? "display.slash" : "display")
                 .font(.system(size: 44))
             Text(model.isOff ? "內建螢幕已關閉" : "內建螢幕開啟中")
@@ -294,23 +353,48 @@ struct ContentView: View {
                 .controlSize(.large)
                 .disabled(model.busy)
 
-            Toggle("自動模式", isOn: $model.autoMode)
-            Toggle("斷線時自動關閉螢幕", isOn: $model.offOnDisconnect)
-                .disabled(!model.autoMode)
-                .padding(.leading, 18)
-            Text("滑鼠 / 觸控板連線時自動開啟螢幕。無論自動或手動關閉,移動實體滑鼠或觸控板都會恢復。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            if let m = model.message {
+                Text(m)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
-            if let m = model.message { Text(m).font(.caption).foregroundStyle(.red) }
-            Text("運作期間不會自動熄屏。\n移動實體滑鼠即可恢復螢幕;結束 App 也會恢復。")
+            Form {
+                Section {
+                    Toggle("自動模式", isOn: $model.autoMode)
+                    Toggle("斷線時自動關閉螢幕", isOn: $model.offOnDisconnect)
+                        .disabled(!model.autoMode)
+                } header: {
+                    Text("自動")
+                } footer: {
+                    Text("滑鼠 / 觸控板連線時自動開啟螢幕。")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Section {
+                    Toggle("登入時開啟 App(隱藏視窗)", isOn: $model.launchAtLogin)
+                    Picker("開啟 App 時", selection: $model.launchBehavior) {
+                        ForEach(LaunchBehavior.allCases) { Text($0.title).tag($0) }
+                    }
+                } header: {
+                    Text("啟動")
+                }
+            }
+            .formStyle(.grouped)
+            .toggleStyle(.switch)
+            .scrollDisabled(true)
+            .frame(height: 300)
+
+            Text("無論自動或手動關閉,移動實體滑鼠或觸控板都會恢復螢幕;結束 App 也會恢復。運作期間不會自動熄屏。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(28)
-        .frame(width: 320)
+        .padding(20)
+        .frame(width: 400)
     }
 }
 

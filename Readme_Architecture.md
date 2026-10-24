@@ -39,6 +39,9 @@ CLAUDE.md              專案規則
 - `applicationDidFinishLaunching`:先呼叫 `PanelController.restore()`(依 `UserDefaults` 記錄恢復上次被停用的面板),
   再攔截 SIGTERM / SIGINT / SIGHUP:收到時先 `restore()` 再 `exit(0)`
   (因為 `pkill` 的 SIGTERM 不會觸發 `applicationWillTerminate`)。
+- 啟動時呼叫 `Model.bootstrap()`(自動模式監控)與 `Model.applyLaunchBehavior()`(「開啟 App 時」的設定)。
+- 由登入項目啟動時隱藏視窗:檢查啟動 Apple Event 的 `prdt` 屬性是否為 `lgit`,是就在 0.3 / 1.0 / 2.5 秒各呼叫一次
+  `NSApp.hide(nil)`(Dock 圖示仍在,點擊可再顯示)。此判斷依賴系統的啟動事件,尚未在實機驗證。
 - `applicationWillTerminate`:呼叫 `restore()`。
 - `applicationShouldTerminateAfterLastWindowClosed` 回傳 `false`:關閉視窗不退出,Dock 圖示與滑鼠監聽常駐。
 - `applicationDockMenu`:Dock 右鍵選單,單一項目依 `PanelController.isActive` 顯示「關閉內建螢幕 / 重新開啟螢幕」,
@@ -56,6 +59,13 @@ CLAUDE.md              專案規則
   開始監控,並在 4 秒後主動評估一次(一個裝置都沒有時不會有連上事件)。
 - `suppressAutoOff`:`wake()` 成功時設為 true(實體滑鼠 / 觸控板操作、手動按鈕都算),自動模式在它為 true 時不會再關螢幕,
   直到下一次 `PointerPresence.onChange`(裝置連上或移除)才清除,避免「有人實際操作但系統判定沒有裝置」時來回開關。
+- `isOff` 每次變動都寫入 `UserDefaults` 的 `lastWasOff`;結束 App 時面板雖會被恢復,但這個記錄不會被清掉,
+  供「恢復上次退出時的狀態」使用。
+- `launchBehavior`(`LaunchBehavior`:`restoreLast` / `screenOn` / `screenOff`,存於 `UserDefaults` 的 `launchBehavior`,
+  預設 `restoreLast`)與 `applyLaunchBehavior()`:啟動時 `AppDelegate` 先恢復面板,再依設定決定是否在 2 秒後呼叫 `toggle()` 關閉螢幕
+  (`restoreLast` 讀 `lastWasOff`;`screenOn` 不動作;`screenOff` 一定關閉)。關閉仍走 `toggle()`,所以同樣受「必須能用實體裝置喚醒」限制。
+- `launchAtLogin`:以 `SMAppService.mainApp` 註冊 / 取消登入項目。狀態為 `requiresApproval` 時顯示提示並開啟系統設定的登入項目頁;
+  失敗時顯示錯誤並還原開關(用 `syncingLogin` 避免 `didSet` 遞迴)。
 - `wake()`:停止 `MouseWatcher`、呼叫 `PanelController.restore()`、`isOff = false`。
   視窗按鈕、Dock 選單、實體滑鼠偵測都走這裡。
 
@@ -83,7 +93,10 @@ CLAUDE.md              專案規則
 ### ScreenOffApp 與 ContentView
 - `ScreenOffApp`(`@main`):`init()` 先跑 `runWatchdogIfRequested()`;場景為 `WindowGroup`(固定內容大小視窗),
   不再使用選單列項目。以 `@NSApplicationDelegateAdaptor` 掛上 `AppDelegate`。
-- `ContentView`:顯示狀態圖示(`display` / `display.slash`)、狀態文字、切換按鈕(忙碌時停用)、錯誤訊息與操作提示。
+- `ContentView`:上方是狀態圖示(`display` / `display.slash`)、狀態文字、切換按鈕(忙碌時停用)與錯誤訊息;
+  下方是分組列表(`Form` + `.formStyle(.grouped)` + `.toggleStyle(.switch)`):「自動」區有「自動模式」與「斷線時自動關閉螢幕」
+  (未開啟自動模式時停用),「啟動」區有「登入時開啟 App(隱藏視窗)」開關與「開啟 App 時」選單。
+  說明文字都加上 `fixedSize(horizontal: false, vertical: true)` 以換行顯示,避免被截成「…」;視窗寬 400,列表固定高 300。
 
 ### PanelController(單例)
 - 停用 / 恢復內建面板的核心,不建立虛擬顯示器。
