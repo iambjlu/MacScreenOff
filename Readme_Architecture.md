@@ -63,7 +63,7 @@ CLAUDE.md              專案規則
   一個裝置都沒有時不會有事件,所以 4 秒時若沒有裝置就依 `offOnDisconnect` 評估一次。
 - `suppressAutoOff`:`wake()` 成功時設為 true(實體滑鼠 / 觸控板操作、手動按鈕都算),斷線關閉在它為 true 時不動作,
   直到下一次有 / 無狀態變化才清除,避免「有人實際操作但系統判定沒有裝置」時來回開關。
-- `keepOffOnInput`(`UserDefaults` 的 `keepOffOnInput`,預設關閉,視窗「滑鼠移動或連線時也不開啟螢幕」):開啟後
+- `keepOffOnInput`(`UserDefaults` 的 `keepOffOnInput`,預設關閉,視窗「外接顯示器連接時,關閉內建顯示器」):開啟後
   實體操作不會觸發還原(`MouseWatcher` 改呼叫 `wakeByInput()`,它在此選項開啟時直接返回)、連線也不會 `wake()`
   (`presenceChanged()` 檢查),且 `toggle()` 不再要求 `MouseWatcher.start()` 成功。這是刻意放寬「必須能用實體裝置喚醒」的選項,
   所以開啟(關閉到開啟)必須通過 `KeepOffConfirmView` 的三步確認 sheet(`showKeepOffConfirm`),任一步可取消;
@@ -112,7 +112,7 @@ CLAUDE.md              專案規則
 - `ScreenOffApp`(`@main`):`init()` 先跑 `runWatchdogIfRequested()`;場景為 `WindowGroup`(固定內容大小視窗),
   不再使用選單列項目。以 `@NSApplicationDelegateAdaptor` 掛上 `AppDelegate`。
 - `ContentView`:上方是狀態圖示(`display` / `display.slash`)、狀態文字、切換按鈕(忙碌時停用)與錯誤訊息;
-  下方是分組列表(`Form` + `.formStyle(.grouped)` + `.toggleStyle(.switch)`):「連線偵測」區有「連線時自動開啟螢幕」、「斷線時自動關閉螢幕」與「滑鼠移動或連線時也不開啟螢幕」(後者啟用時彈出三步確認的 `KeepOffConfirmView`),「啟動」區有「登入時開啟 App(隱藏視窗)」開關與「開啟 App 時」選單。
+  下方是分組列表(`Form` + `.formStyle(.grouped)` + `.toggleStyle(.switch)`):「連線偵測」區有「連線時自動開啟螢幕」、「斷線時自動關閉螢幕」與「外接顯示器連接時,關閉內建顯示器」(後者啟用時彈出三步確認的 `KeepOffConfirmView`),「啟動」區有「登入時開啟 App(隱藏視窗)」開關與「開啟 App 時」選單。
   說明文字都加上 `fixedSize(horizontal: false, vertical: true)` 以換行顯示,避免被截成「…」;視窗寬 400,列表固定高 350。
 
 ### PanelController(單例)

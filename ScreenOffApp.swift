@@ -122,7 +122,7 @@ final class Model: ObservableObject {
     @Published var message: String?
     /// 實體操作(或手動)恢復螢幕後,在下一次裝置連上 / 移除之前,不會因「斷線」而自動關閉螢幕。
     private var suppressAutoOff = false
-    /// 啟用「滑鼠移動或連線時也不開啟螢幕」前的三步確認視窗。
+    /// 啟用「外接顯示器連接時,關閉內建顯示器」前的三步確認視窗。
     @Published var showKeepOffConfirm = false
     /// 關閉內建螢幕成功的當下是否有外接螢幕(用來判斷之後外接螢幕是不是被移除了)。
     private var hadExternalAtOff = false
@@ -261,7 +261,7 @@ final class Model: ObservableObject {
         toggle()
     }
 
-    /// 安全閥:「滑鼠移動或連線時也不開啟螢幕」開啟、且關螢幕時有外接螢幕,之後外接螢幕被移除,
+    /// 安全閥:「外接顯示器連接時,關閉內建顯示器」開啟、且關螢幕時有外接螢幕,之後外接螢幕被移除,
     /// 就恢復內建螢幕(否則系統會沒有任何螢幕,本機又無法喚醒)。
     func displaysChanged() {
         guard isOff, keepOffOnInput, hadExternalAtOff, !activeExternalDisplayExists() else { return }
@@ -462,7 +462,7 @@ struct ContentView: View {
                         }
                     ))
                     Toggle("斷線時自動關閉螢幕", isOn: $model.offOnDisconnect)
-                    Toggle("滑鼠移動或連線時也不開啟螢幕", isOn: Binding(
+                    Toggle("外接顯示器連接時,關閉內建顯示器", isOn: Binding(
                         get: { model.keepOffOnInput },
                         set: { on in
                             if on { model.showKeepOffConfirm = true } else { model.keepOffOnInput = false }
@@ -514,7 +514,7 @@ struct ContentView: View {
     }
 }
 
-/// 啟用「滑鼠移動或連線時也不開啟螢幕」前的三步確認。任何一步都可以取消。
+/// 啟用「外接顯示器連接時,關閉內建顯示器」前的三步確認。任何一步都可以取消。
 struct KeepOffConfirmView: View {
     let onConfirm: () -> Void
     let onCancel: () -> Void
