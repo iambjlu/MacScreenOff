@@ -89,7 +89,7 @@ final class Model: ObservableObject {
         } else {
             // 必要條件:能用實體滑鼠 / 觸控板喚醒。監聽啟動失敗就不關螢幕(手動與自動皆同)。
             guard MouseWatcher.shared.start() else {
-                message = "無法監聽實體滑鼠 / 觸控板,已取消關閉。請到「系統設定 > 隱私權與安全性 > 輸入監控」授權 ScreenOff 後再試。"
+                message = "無法監聽實體滑鼠 / 觸控板,已取消關閉(否則無法在本機喚醒螢幕)。"
                 return
             }
             busy = true
@@ -200,21 +200,17 @@ final class PointerPresence {
 }
 
 /// 監聽實體 HID 滑鼠。螢幕共享的遠端操作是系統層級注入的事件,不會經過 HID 裝置,
-/// 因此只有真的碰到本機滑鼠時才會觸發。(可能需要「輸入監控」權限)
+/// 因此只有真的碰到本機滑鼠時才會觸發。
 final class MouseWatcher {
     static let shared = MouseWatcher()
     private var manager: IOHIDManager?
     private var armedAt = Date.distantFuture
 
     /// grace:啟動後的緩衝秒數,避免按下按鈕時的滑鼠動作立刻觸發還原。
-    /// 回傳 false 代表無法監聽實體裝置(通常是尚未授權「輸入監控」)。此時不應該關閉螢幕,否則無法在本機喚醒。
+    /// 回傳 false 代表無法監聽實體裝置。此時不應該關閉螢幕,否則無法在本機喚醒。
     @discardableResult
     func start(grace: TimeInterval = 3) -> Bool {
         stop()
-        guard IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted else {
-            _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)   // 第一次會跳出授權提示
-            return false
-        }
         armedAt = Date().addingTimeInterval(grace)
         let mgr = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
         IOHIDManagerSetDeviceMatchingMultiple(mgr, PointerDevices.matching as CFArray)

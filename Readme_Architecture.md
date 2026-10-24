@@ -76,9 +76,8 @@ CLAUDE.md              專案規則
 - 滑鼠的有效事件:X / Y / 滾輪非零位移,或任一按鈕按下。
 - 觸控板的有效事件:任何非零的輸入值(觸控板只在有觸控時才送報告),但排除恆為非零的 Digitizer Scan Time(0x56)。
 - 觸發後以 `Task { @MainActor }` 呼叫 `Model.shared.wake()`。
-- `start(grace: 3) -> Bool`:先以 `IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)` 檢查「輸入監控」授權,
-  未授權就呼叫 `IOHIDRequestAccess` 並回傳 false;`IOHIDManagerOpen` 失敗也回傳 false。成功後 3 秒內忽略事件,
-  避免按下按鈕時的滑鼠動作立刻觸發還原。`stop()` 關閉並重置。
+- `start(grace: 3) -> Bool`:`IOHIDManagerOpen` 失敗時回傳 false;成功後 3 秒內忽略事件,
+  避免按下按鈕時的滑鼠動作立刻觸發還原。`stop()` 關閉並重置。不需要「輸入監控」授權。
 - 回傳 false 時 `Model.toggle()` 不會關閉螢幕,確保任何關閉方式都能由實體裝置恢復。
 
 ### ScreenOffApp 與 ContentView
@@ -106,7 +105,6 @@ CLAUDE.md              專案規則
    `LSMinimumSystemVersion = 13.0`;沒有 `LSUIElement`,所以有 Dock 圖示。
 5. `codesign --force --deep --sign -`(ad-hoc,`--deep` 讓 `so-watchdog` 一併簽署)。
 - 已知:同一個 `swiftc` 指令帶了兩個 `-target`(先 arm64-macosx13.0,再 `$ARCH-apple-macos13.0`),後者生效,不影響結果。
-- 每次重新編譯 ad-hoc 簽章都會改變,「輸入監控」授權可能需要重新給。
 
 ## make-icon.swift
 - 以 AppKit 繪製 1024 規格的圖示:824/1024 的圓角方塊、深藍到紫的漸層、SF Symbol `display` 染成白色、右下角紅色電源鈕。
