@@ -50,7 +50,7 @@ CLAUDE.md              專案規則
 ### Model(`@MainActor`,`ObservableObject`,單例 `Model.shared`)
 - UI 狀態:`isOff`、`busy`、`message`。
 - `toggle()`:`busy` 時忽略;目前為關閉狀態則走 `wake()`;否則先 `MouseWatcher.start()`
-  (「能用實體滑鼠 / 觸控板喚醒」是必要條件,手動、連線偵測與開啟 App 時的設定都一樣;失敗就把原因放進 `message` 並取消),
+  (「能用實體滑鼠 / 觸控板喚醒」是必要條件(`keepOffOnInput` 開啟時除外),手動、連線偵測與開啟 App 時的設定都一樣;失敗就把原因放進 `message` 並取消),
   再呼叫 `PanelController.activate`;成功後 `isOff = true`,失敗則停止 `MouseWatcher` 並顯示錯誤訊息。
 - 連線偵測(給遠端使用的情境)由兩個獨立選項控制,任一開啟就會啟動 `PointerPresence` 監控,兩者都關閉就停止:
   - `onConnectWake`(`UserDefaults` 的 `onConnectWake`,視窗「連線時自動開啟螢幕」):實體滑鼠 / 觸控板從無到有時 `wake()`。
@@ -63,6 +63,11 @@ CLAUDE.md              專案規則
   一個裝置都沒有時不會有事件,所以 4 秒時若沒有裝置就依 `offOnDisconnect` 評估一次。
 - `suppressAutoOff`:`wake()` 成功時設為 true(實體滑鼠 / 觸控板操作、手動按鈕都算),斷線關閉在它為 true 時不動作,
   直到下一次有 / 無狀態變化才清除,避免「有人實際操作但系統判定沒有裝置」時來回開關。
+- `keepOffOnInput`(`UserDefaults` 的 `keepOffOnInput`,預設關閉,視窗「滑鼠移動或連線時也不開啟螢幕」):開啟後
+  實體操作不會觸發還原(`MouseWatcher` 改呼叫 `wakeByInput()`,它在此選項開啟時直接返回)、連線也不會 `wake()`
+  (`presenceChanged()` 檢查),且 `toggle()` 不再要求 `MouseWatcher.start()` 成功。這是刻意放寬「必須能用實體裝置喚醒」的選項,
+  所以開啟(關閉到開啟)必須通過 `KeepOffConfirmView` 的三步確認 sheet(`showKeepOffConfirm`),任一步可取消;
+  關閉(開啟到關閉)直接生效,並且若此時 `isOff` 為 true,會立刻 `MouseWatcher.start()` 接回本機喚醒,失敗則顯示訊息。
 - `isOff` 每次變動都寫入 `UserDefaults` 的 `lastWasOff`;結束 App 時面板雖會被恢復,但這個記錄不會被清掉,
   供「恢復上次退出時的狀態」使用。
 - `launchBehavior`(`LaunchBehavior`:`restoreLast` / `screenOn` / `screenOff`,存於 `UserDefaults` 的 `launchBehavior`,
@@ -89,7 +94,7 @@ CLAUDE.md              專案規則
 - 裝置分兩類:主要 usage page 為 Digitizer、或產品名稱含 "trackpad" 的視為觸控板,其餘視為滑鼠。
 - 滑鼠的有效事件:X / Y / 滾輪非零位移,或任一按鈕按下。
 - 觸控板的有效事件:任何非零的輸入值(觸控板只在有觸控時才送報告),但排除恆為非零的 Digitizer Scan Time(0x56)。
-- 觸發後以 `Task { @MainActor }` 呼叫 `Model.shared.wake()`。
+- 觸發後以 `Task { @MainActor }` 呼叫 `Model.shared.wakeByInput()`(`keepOffOnInput` 開啟時忽略)。
 - `start(grace: 3) -> Bool`:`IOHIDManagerOpen` 失敗時回傳 false;成功後 3 秒內忽略事件,
   避免按下按鈕時的滑鼠動作立刻觸發還原。`stop()` 關閉並重置。不需要「輸入監控」授權。
 - 回傳 false 時 `Model.toggle()` 不會關閉螢幕,確保任何關閉方式都能由實體裝置恢復。
@@ -98,8 +103,8 @@ CLAUDE.md              專案規則
 - `ScreenOffApp`(`@main`):`init()` 先跑 `runWatchdogIfRequested()`;場景為 `WindowGroup`(固定內容大小視窗),
   不再使用選單列項目。以 `@NSApplicationDelegateAdaptor` 掛上 `AppDelegate`。
 - `ContentView`:上方是狀態圖示(`display` / `display.slash`)、狀態文字、切換按鈕(忙碌時停用)與錯誤訊息;
-  下方是分組列表(`Form` + `.formStyle(.grouped)` + `.toggleStyle(.switch)`):「連線偵測」區有「連線時自動開啟螢幕」與「斷線時自動關閉螢幕」,「啟動」區有「登入時開啟 App(隱藏視窗)」開關與「開啟 App 時」選單。
-  說明文字都加上 `fixedSize(horizontal: false, vertical: true)` 以換行顯示,避免被截成「…」;視窗寬 400,列表固定高 300。
+  下方是分組列表(`Form` + `.formStyle(.grouped)` + `.toggleStyle(.switch)`):「連線偵測」區有「連線時自動開啟螢幕」、「斷線時自動關閉螢幕」與「滑鼠移動或連線時也不開啟螢幕」(後者啟用時彈出三步確認的 `KeepOffConfirmView`),「啟動」區有「登入時開啟 App(隱藏視窗)」開關與「開啟 App 時」選單。
+  說明文字都加上 `fixedSize(horizontal: false, vertical: true)` 以換行顯示,避免被截成「…」;視窗寬 400,列表固定高 350。
 
 ### PanelController(單例)
 - 停用 / 恢復內建面板的核心,不建立虛擬顯示器。
@@ -133,3 +138,5 @@ CLAUDE.md              專案規則
 3. 實體滑鼠 / 觸控板有動作(或「連線時自動開啟螢幕」偵測到裝置連線)→ `Model.wake()` → 停止監聽、`restore()`(重新啟用面板、終止看門狗、釋放斷言)。
 4. 主程式被 Force Quit / `kill -9` → 看門狗偵測到 PID 消失,重新啟用面板。
 5. 下次啟動 → `restore()` 依 `UserDefaults` 記錄再恢復一次(保險)。
+6. `keepOffOnInput` 開啟時,實體操作與裝置連線都不會觸發 `wake()`;能恢復的只剩視窗 / Dock 的按鈕、結束 App、
+   看門狗與下次啟動時的 `restore()`。

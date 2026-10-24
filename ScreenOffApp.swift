@@ -100,6 +100,19 @@ final class Model: ObservableObject {
     @Published var message: String?
     /// 實體操作(或手動)恢復螢幕後,在下一次裝置連上 / 移除之前,不會因「斷線」而自動關閉螢幕。
     private var suppressAutoOff = false
+    /// 啟用「滑鼠移動或連線時也不開啟螢幕」前的三步確認視窗。
+    @Published var showKeepOffConfirm = false
+    /// 啟用後,實體滑鼠 / 觸控板的操作與連線都不會開啟螢幕,也不再強制要求能用實體裝置喚醒(預設關閉)。
+    /// 風險:螢幕關閉後本機無法喚醒,只能靠視窗 / Dock 的按鈕、結束 App 或重新開機。
+    @Published var keepOffOnInput = UserDefaults.standard.bool(forKey: "keepOffOnInput") {
+        didSet {
+            UserDefaults.standard.set(keepOffOnInput, forKey: "keepOffOnInput")
+            // 螢幕已關閉時取消此選項,要立刻接回實體裝置監聽,否則會沒有本機喚醒途徑
+            if !keepOffOnInput && isOff && !MouseWatcher.shared.start() {
+                message = "無法監聽實體滑鼠 / 觸控板,目前無法在本機喚醒螢幕。"
+            }
+        }
+    }
     /// 要關閉「連線時自動開啟螢幕」時先跳出確認對話框(它是恢復螢幕的保護機制之一)。
     @Published var confirmDisableConnectWake = false
     /// 實體滑鼠 / 觸控板從無到有(連線)時是否自動開啟螢幕。
@@ -138,7 +151,7 @@ final class Model: ObservableObject {
             wake()
         } else {
             // 必要條件:能用實體滑鼠 / 觸控板喚醒。監聽啟動失敗就不關螢幕(手動與自動皆同)。
-            guard MouseWatcher.shared.start() else {
+            guard keepOffOnInput || MouseWatcher.shared.start() else {
                 message = "無法監聽實體滑鼠 / 觸控板,已取消關閉(否則無法在本機喚醒螢幕)。"
                 return
             }
@@ -213,7 +226,7 @@ final class Model: ObservableObject {
         lastPresent = present
         suppressAutoOff = false
         if present {
-            if onConnectWake { wake() }
+            if onConnectWake && !keepOffOnInput { wake() }
         } else {
             turnOffForDisconnect()
         }
@@ -222,6 +235,12 @@ final class Model: ObservableObject {
     private func turnOffForDisconnect() {
         guard offOnDisconnect, !isOff, !suppressAutoOff else { return }
         toggle()
+    }
+
+    /// 由實體滑鼠 / 觸控板操作觸發的還原;啟用 `keepOffOnInput` 時忽略。
+    func wakeByInput() {
+        guard !keepOffOnInput else { return }
+        wake()
     }
 
     /// 還原內建螢幕(視窗、Dock 選單、實體滑鼠皆走這裡)。
@@ -360,7 +379,7 @@ final class MouseWatcher {
             let isButton = page == UInt32(kHIDPage_Button)
             guard isMotion || isButton else { return }
         }
-        Task { @MainActor in Model.shared.wake() }
+        Task { @MainActor in Model.shared.wakeByInput() }
     }
 }
 
@@ -411,6 +430,12 @@ struct ContentView: View {
                         }
                     ))
                     Toggle("斷線時自動關閉螢幕", isOn: $model.offOnDisconnect)
+                    Toggle("滑鼠移動或連線時也不開啟螢幕", isOn: Binding(
+                        get: { model.keepOffOnInput },
+                        set: { on in
+                            if on { model.showKeepOffConfirm = true } else { model.keepOffOnInput = false }
+                        }
+                    ))
                 } header: {
                     Text("連線偵測")
                 } footer: {
@@ -436,16 +461,59 @@ struct ContentView: View {
                 Text("關閉後,滑鼠或觸控板連線時不會自動開啟螢幕。移動實體滑鼠 / 觸控板、遠端按「重新開啟螢幕」或結束 App 仍可恢復。")
             }
             .scrollDisabled(true)
-            .frame(height: 300)
+            .sheet(isPresented: $model.showKeepOffConfirm) {
+                KeepOffConfirmView(
+                    onConfirm: { model.keepOffOnInput = true; model.showKeepOffConfirm = false },
+                    onCancel: { model.showKeepOffConfirm = false }
+                )
+            }
+            .frame(height: 350)
 
-            Text("無論自動或手動關閉,移動實體滑鼠或觸控板都會恢復螢幕;結束 App 也會恢復。運作期間不會自動熄屏。")
+            Text(model.keepOffOnInput
+                 ? "本機喚醒已停用:移動滑鼠或連線都不會開啟螢幕。請用遠端按「重新開啟螢幕」或結束 App 恢復。"
+                 : "無論自動或手動關閉,移動實體滑鼠或觸控板都會恢復螢幕;結束 App 也會恢復。運作期間不會自動熄屏。")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(model.keepOffOnInput ? Color.orange : Color.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(20)
         .frame(width: 400)
+    }
+}
+
+/// 啟用「滑鼠移動或連線時也不開啟螢幕」前的三步確認。任何一步都可以取消。
+struct KeepOffConfirmView: View {
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+    @State private var step = 1
+
+    private let texts = [
+        "啟用後,移動實體滑鼠 / 觸控板,或藍牙 / 有線裝置連線,都不會再開啟螢幕。",
+        "螢幕關閉後,本機將無法靠滑鼠或觸控板喚醒。只能從螢幕共享或 SSH 連進來按「重新開啟螢幕」、結束 App(pkill ScreenOff),或重新開機。若遠端也連不上,你會被擋在外面。",
+        "最後確認:你已確認遠端連線可用,並接受本機無法喚醒螢幕的風險。確定要啟用嗎?",
+    ]
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 36))
+                .foregroundStyle(.orange)
+            Text("停用本機喚醒(第 \(step) / 3 步)")
+                .font(.headline)
+            Text(texts[step - 1])
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) {
+                Button("取消", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(step < 3 ? "我了解,繼續" : "確認啟用", role: step == 3 ? .destructive : nil) {
+                    if step < 3 { step += 1 } else { onConfirm() }
+                }
+            }
+        }
+        .padding(24)
+        .frame(width: 380)
     }
 }
 
