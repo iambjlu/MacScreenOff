@@ -63,6 +63,8 @@ ScreenOffApp.swift   App 本體(UI、PanelController、MouseWatcher、看門狗)
 build.sh             編譯、打包、簽署
 make-icon.swift      產生 AppIcon.icns 的腳本
 AppIcon.icns         App 圖示
+Readme_Architecture.md  專案架構說明(逐檔案)
+CLAUDE.md            專案規則
 ```
 
 重新產生圖示:
