@@ -68,6 +68,10 @@ CLAUDE.md              專案規則
   (`presenceChanged()` 檢查),且 `toggle()` 不再要求 `MouseWatcher.start()` 成功。這是刻意放寬「必須能用實體裝置喚醒」的選項,
   所以開啟(關閉到開啟)必須通過 `KeepOffConfirmView` 的三步確認 sheet(`showKeepOffConfirm`),任一步可取消;
   關閉(開啟到關閉)直接生效,並且若此時 `isOff` 為 true,會立刻 `MouseWatcher.start()` 接回本機喚醒,失敗則顯示訊息。
+  - 安全閥:`toggle()` 成功關閉內建螢幕時記下 `hadExternalAtOff = activeExternalDisplayExists()`。
+    `displaysChanged()` 在 `isOff`、`keepOffOnInput`、`hadExternalAtOff` 都成立、但外接螢幕已不存在時,
+    顯示「外接螢幕已移除,已恢復內建螢幕」並 `wake()`,避免變成沒有任何螢幕。選項沒開、或關螢幕時本來就沒有外接螢幕,都不會觸發。
+    已知風險:螢幕共享期間系統若建立虛擬顯示器,可能被當成外接螢幕。
 - `isOff` 每次變動都寫入 `UserDefaults` 的 `lastWasOff`;結束 App 時面板雖會被恢復,但這個記錄不會被清掉,
   供「恢復上次退出時的狀態」使用。
 - `launchBehavior`(`LaunchBehavior`:`restoreLast` / `screenOn` / `screenOff`,存於 `UserDefaults` 的 `launchBehavior`,
@@ -85,6 +89,11 @@ CLAUDE.md              專案規則
   (Magic Mouse 2 的 0x004C/0x0269、Magic Trackpad 2 的 0x004C/0x0265 等藍牙裝置連線後都會成為 HID 裝置;有線裝置同樣算)。
   `Virtual` 傳輸的裝置不計。`isPresent` 表示目前是否至少有一個裝置;裝置數量變動後延遲 3 秒才呼叫 `onChange`,
   避免瞬間斷線誤動作。`start()` / `stop()` 負責建立與釋放監控。
+
+### activeExternalDisplayExists() 與 DisplayWatcher
+- `activeExternalDisplayExists()`:`CGGetActiveDisplayList` 中是否有 `CGDisplayIsBuiltin == 0` 的顯示器。
+- `DisplayWatcher.start()`:註冊 `CGDisplayRegisterReconfigurationCallback`,組態變動結束後(略過 `beginConfigurationFlag`)
+  延遲 1.5 秒呼叫 `Model.displaysChanged()`;`AppDelegate` 啟動時呼叫一次。
 
 ### MouseWatcher(單例)
 - 以 `IOHIDManager` 依 `PointerDevices.matching` 配對裝置(涵蓋 Magic Mouse 與 Magic Trackpad)
@@ -139,4 +148,4 @@ CLAUDE.md              專案規則
 4. 主程式被 Force Quit / `kill -9` → 看門狗偵測到 PID 消失,重新啟用面板。
 5. 下次啟動 → `restore()` 依 `UserDefaults` 記錄再恢復一次(保險)。
 6. `keepOffOnInput` 開啟時,實體操作與裝置連線都不會觸發 `wake()`;能恢復的只剩視窗 / Dock 的按鈕、結束 App、
-   看門狗與下次啟動時的 `restore()`。
+   看門狗與下次啟動時的 `restore()`;另外,關螢幕時若有外接螢幕而它之後被移除,`displaysChanged()` 會自動恢復內建螢幕。

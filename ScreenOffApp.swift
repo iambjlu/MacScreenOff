@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Model.shared.bootstrap()
             Model.shared.applyLaunchBehavior()
         }
+        DisplayWatcher.start()
         // 由「登入項目」啟動時隱藏視窗(Dock 圖示仍在,點它可再顯示)。
         // 以啟動事件的 'prdt' 屬性是否為 'lgit'(launched as login item)判斷。
         let event = NSAppleEventManager.shared().currentAppleEvent
@@ -71,6 +72,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleFromDock() { Task { @MainActor in Model.shared.toggle() } }
 }
 
+/// 目前是否有作用中的非內建(外接)顯示器。
+func activeExternalDisplayExists() -> Bool {
+    var count: UInt32 = 0
+    CGGetActiveDisplayList(0, nil, &count)
+    var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+    CGGetActiveDisplayList(count, &ids, &count)
+    return ids.prefix(Int(count)).contains { CGDisplayIsBuiltin($0) == 0 }
+}
+
+/// 顯示器組態變動時通知 Model(用來偵測外接螢幕被移除)。
+enum DisplayWatcher {
+    static func start() {
+        CGDisplayRegisterReconfigurationCallback({ _, flags, _ in
+            guard !flags.contains(.beginConfigurationFlag) else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                Task { @MainActor in Model.shared.displaysChanged() }
+            }
+        }, nil)
+    }
+}
+
 /// 讀取選項;尚未設定過時,沿用舊版「自動模式」的值。
 private func initialFlag(_ key: String) -> Bool {
     let d = UserDefaults.standard
@@ -102,6 +124,8 @@ final class Model: ObservableObject {
     private var suppressAutoOff = false
     /// 啟用「滑鼠移動或連線時也不開啟螢幕」前的三步確認視窗。
     @Published var showKeepOffConfirm = false
+    /// 關閉內建螢幕成功的當下是否有外接螢幕(用來判斷之後外接螢幕是不是被移除了)。
+    private var hadExternalAtOff = false
     /// 啟用後,實體滑鼠 / 觸控板的操作與連線都不會開啟螢幕,也不再強制要求能用實體裝置喚醒(預設關閉)。
     /// 風險:螢幕關閉後本機無法喚醒,只能靠視窗 / Dock 的按鈕、結束 App 或重新開機。
     @Published var keepOffOnInput = UserDefaults.standard.bool(forKey: "keepOffOnInput") {
@@ -160,7 +184,7 @@ final class Model: ObservableObject {
                 busy = false
                 message = error
                 isOff = PanelController.shared.isActive
-                if !isOff { MouseWatcher.shared.stop() }
+                if isOff { hadExternalAtOff = activeExternalDisplayExists() } else { MouseWatcher.shared.stop() }
             }
         }
     }
@@ -235,6 +259,14 @@ final class Model: ObservableObject {
     private func turnOffForDisconnect() {
         guard offOnDisconnect, !isOff, !suppressAutoOff else { return }
         toggle()
+    }
+
+    /// 安全閥:「滑鼠移動或連線時也不開啟螢幕」開啟、且關螢幕時有外接螢幕,之後外接螢幕被移除,
+    /// 就恢復內建螢幕(否則系統會沒有任何螢幕,本機又無法喚醒)。
+    func displaysChanged() {
+        guard isOff, keepOffOnInput, hadExternalAtOff, !activeExternalDisplayExists() else { return }
+        message = "外接螢幕已移除,已恢復內建螢幕。"
+        wake()
     }
 
     /// 由實體滑鼠 / 觸控板操作觸發的還原;啟用 `keepOffOnInput` 時忽略。
