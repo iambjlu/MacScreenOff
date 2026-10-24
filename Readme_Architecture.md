@@ -52,10 +52,14 @@ CLAUDE.md              專案規則
   視窗按鈕、Dock 選單、實體滑鼠偵測都走這裡。
 
 ### MouseWatcher(單例)
-- 以 `IOHIDManager` 配對 GenericDesktop/Mouse 裝置並註冊 input value callback,掛在主 run loop。
+- 以 `IOHIDManager` 配對三種裝置並註冊 input value callback,掛在主 run loop:GenericDesktop/Mouse、
+  GenericDesktop/Pointer、Digitizer/TouchPad(涵蓋 Magic Mouse 與 Magic Trackpad)。
 - 只有「實體」HID 裝置會產生事件;螢幕共享是系統層級注入的事件,不經過 HID 裝置,因此不會誤觸發。
   另外過濾 `kIOHIDTransportKey == "Virtual"` 的裝置。
-- 有效事件:X / Y / 滾輪非零位移,或任一按鈕按下;觸發後以 `Task { @MainActor }` 呼叫 `Model.shared.wake()`。
+- 裝置分兩類:主要 usage page 為 Digitizer、或產品名稱含 "trackpad" 的視為觸控板,其餘視為滑鼠。
+- 滑鼠的有效事件:X / Y / 滾輪非零位移,或任一按鈕按下。
+- 觸控板的有效事件:任何非零的輸入值(觸控板只在有觸控時才送報告),但排除恆為非零的 Digitizer Scan Time(0x56)。
+- 觸發後以 `Task { @MainActor }` 呼叫 `Model.shared.wake()`。
 - `start(grace: 3)`:啟動後 3 秒內忽略事件,避免按下按鈕時的滑鼠動作立刻觸發還原。`stop()` 關閉並重置。
 - 可能需要「輸入監控」權限。
 

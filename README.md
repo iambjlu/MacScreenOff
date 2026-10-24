@@ -11,7 +11,7 @@
 | 元件 | 說明 |
 | --- | --- |
 | `PanelController` | 呼叫 `CGSConfigureDisplayEnabled` 停用內建面板,並以 `IOPMAssertion` 阻止閒置熄屏 |
-| `MouseWatcher` | 用 `IOHIDManager` 監聽**實體** HID 滑鼠,有動作就恢復螢幕(遠端注入的事件不經過 HID 裝置,不會誤觸發) |
+| `MouseWatcher` | 用 `IOHIDManager` 監聽**實體** HID 滑鼠與觸控板(含 Magic Mouse / Magic Trackpad),有動作就恢復螢幕(遠端注入的事件不經過 HID 裝置,不會誤觸發) |
 | 看門狗 `so-watchdog` | `.app` 內的獨立行程,盯著主程式 PID;主程式以任何方式結束(包含 Force Quit / `kill -9`)都會把面板重新啟用 |
 | 啟動自救 | 停用的顯示器 ID 會存進 `UserDefaults`,下次啟動時先重新啟用 |
 
@@ -54,7 +54,7 @@ open ScreenOff.app
 
 - macOS 可能拒絕停用最後一個顯示器;失敗時 App 會顯示錯誤訊息,螢幕維持不變。
 - 面板停用後沒有螢幕,選單列與 Dock 都看不到,因此恢復只能靠實體滑鼠、遠端操作或結束 App。
-- 觸控板(Magic Trackpad)目前不會觸發恢復,只偵測滑鼠。
+- 觸控板的偵測依賴其 HID 回報格式,尚未在實機驗證;若觸控板沒有反應,請先改用滑鼠並告知。
 
 ## 檔案
 

@@ -105,11 +105,13 @@ final class MouseWatcher {
         stop()
         armedAt = Date().addingTimeInterval(grace)
         let mgr = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
-        let match: [String: Any] = [
-            kIOHIDDeviceUsagePageKey: Int(kHIDPage_GenericDesktop),
-            kIOHIDDeviceUsageKey: Int(kHIDUsage_GD_Mouse),
+        // 滑鼠(含 Magic Mouse)與觸控板(含 Magic Trackpad)
+        let match: [[String: Any]] = [
+            [kIOHIDDeviceUsagePageKey: Int(kHIDPage_GenericDesktop), kIOHIDDeviceUsageKey: Int(kHIDUsage_GD_Mouse)],
+            [kIOHIDDeviceUsagePageKey: Int(kHIDPage_GenericDesktop), kIOHIDDeviceUsageKey: Int(kHIDUsage_GD_Pointer)],
+            [kIOHIDDeviceUsagePageKey: Int(kHIDPage_Digitizer), kIOHIDDeviceUsageKey: Int(kHIDUsage_Dig_TouchPad)],
         ]
-        IOHIDManagerSetDeviceMatching(mgr, match as CFDictionary)
+        IOHIDManagerSetDeviceMatchingMultiple(mgr, match as CFArray)
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         IOHIDManagerRegisterInputValueCallback(mgr, { ctx, _, sender, value in
             guard let ctx else { return }
@@ -131,17 +133,27 @@ final class MouseWatcher {
 
     private func handle(sender: UnsafeMutableRawPointer?, value: IOHIDValue) {
         guard Date() >= armedAt else { return }
+        var isTrackpad = false
         if let sender {
             let device = Unmanaged<IOHIDDevice>.fromOpaque(sender).takeUnretainedValue()
             if IOHIDDeviceGetProperty(device, kIOHIDTransportKey as CFString) as? String == "Virtual" { return }
+            let primaryPage = IOHIDDeviceGetProperty(device, kIOHIDPrimaryUsagePageKey as CFString) as? Int
+            let product = IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String ?? ""
+            isTrackpad = primaryPage == Int(kHIDPage_Digitizer) || product.localizedCaseInsensitiveContains("trackpad")
         }
         let element = IOHIDValueGetElement(value)
         let page = IOHIDElementGetUsagePage(element), usage = IOHIDElementGetUsage(element)
         guard IOHIDValueGetIntegerValue(value) != 0 else { return }
-        let isMotion = page == UInt32(kHIDPage_GenericDesktop)
-            && [UInt32(kHIDUsage_GD_X), UInt32(kHIDUsage_GD_Y), UInt32(kHIDUsage_GD_Wheel)].contains(usage)
-        let isButton = page == UInt32(kHIDPage_Button)
-        guard isMotion || isButton else { return }
+
+        if isTrackpad {
+            // 觸控板只在有觸控時才送報告;排除恆為非零的 Scan Time(Digitizer 0x56)
+            if page == UInt32(kHIDPage_Digitizer) && usage == 0x56 { return }
+        } else {
+            let isMotion = page == UInt32(kHIDPage_GenericDesktop)
+                && [UInt32(kHIDUsage_GD_X), UInt32(kHIDUsage_GD_Y), UInt32(kHIDUsage_GD_Wheel)].contains(usage)
+            let isButton = page == UInt32(kHIDPage_Button)
+            guard isMotion || isButton else { return }
+        }
         Task { @MainActor in Model.shared.wake() }
     }
 }
