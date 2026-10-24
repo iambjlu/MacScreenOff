@@ -71,6 +71,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleFromDock() { Task { @MainActor in Model.shared.toggle() } }
 }
 
+/// 讀取選項;尚未設定過時,沿用舊版「自動模式」的值。
+private func initialFlag(_ key: String) -> Bool {
+    let d = UserDefaults.standard
+    return (d.object(forKey: key) as? Bool) ?? d.bool(forKey: "autoMode")
+}
+
 /// 開啟 App 時的螢幕狀態。
 enum LaunchBehavior: String, CaseIterable, Identifiable {
     case restoreLast, screenOn, screenOff
@@ -92,11 +98,15 @@ final class Model: ObservableObject {
     @Published var isOff = false { didSet { UserDefaults.standard.set(isOff, forKey: "lastWasOff") } }
     @Published var busy = false
     @Published var message: String?
-    /// 實體操作(或手動)恢復螢幕後,在下一次裝置連上 / 移除事件之前,自動模式不再關閉螢幕。
+    /// 實體操作(或手動)恢復螢幕後,在下一次裝置連上 / 移除之前,不會因「斷線」而自動關閉螢幕。
     private var suppressAutoOff = false
-    /// 自動模式下,實體滑鼠 / 觸控板全部斷線時是否關閉螢幕(連線時一律會開啟)。
-    @Published var offOnDisconnect = (UserDefaults.standard.object(forKey: "offOnDisconnect") as? Bool) ?? true {
-        didSet { UserDefaults.standard.set(offOnDisconnect, forKey: "offOnDisconnect") }
+    /// 實體滑鼠 / 觸控板從無到有(連線)時是否自動開啟螢幕。
+    @Published var onConnectWake = initialFlag("onConnectWake") {
+        didSet { UserDefaults.standard.set(onConnectWake, forKey: "onConnectWake"); updateMonitoring() }
+    }
+    /// 實體滑鼠 / 觸控板全部斷線時是否自動關閉螢幕。
+    @Published var offOnDisconnect = initialFlag("offOnDisconnect") {
+        didSet { UserDefaults.standard.set(offOnDisconnect, forKey: "offOnDisconnect"); updateMonitoring() }
     }
     @Published var launchBehavior = LaunchBehavior(rawValue: UserDefaults.standard.string(forKey: "launchBehavior") ?? "") ?? .restoreLast {
         didSet { UserDefaults.standard.set(launchBehavior.rawValue, forKey: "launchBehavior") }
@@ -116,12 +126,6 @@ final class Model: ObservableObject {
                 message = "設定登入時開啟失敗:\(error.localizedDescription)"
                 syncingLogin = true; launchAtLogin = oldValue; syncingLogin = false
             }
-        }
-    }
-    @Published var autoMode = UserDefaults.standard.bool(forKey: "autoMode") {
-        didSet {
-            UserDefaults.standard.set(autoMode, forKey: "autoMode")
-            if autoMode { startAuto() } else { PointerPresence.shared.stop() }
         }
     }
 
@@ -161,26 +165,61 @@ final class Model: ObservableObject {
         }
     }
 
-    // MARK: 自動模式:有實體滑鼠 / 觸控板連線就開螢幕,沒有就關螢幕(給遠端使用)
+    // MARK: 連線偵測:實體滑鼠 / 觸控板連線時開螢幕、全部斷線時關螢幕(給遠端使用)
+
+    private var monitoring = false
+    private var armed = false
+    private var lastPresent = false
 
     /// 啟動時依記住的設定開始監控。
-    func bootstrap() { if autoMode { startAuto() } }
+    func bootstrap() { updateMonitoring() }
 
-    private func startAuto() {
-        PointerPresence.shared.onChange = { [weak self] in
-            Task { @MainActor in self?.suppressAutoOff = false; self?.applyAuto() }
-        }
+    private func updateMonitoring() {
+        if onConnectWake || offOnDisconnect { startMonitoring() } else { stopMonitoring() }
+    }
+
+    private func startMonitoring() {
+        guard !monitoring else { return }
+        monitoring = true
+        armed = false
         suppressAutoOff = false
+        PointerPresence.shared.onChange = { [weak self] in Task { @MainActor in self?.presenceChanged() } }
         PointerPresence.shared.start()
-        // 一個裝置都沒有時不會有連上事件,所以主動評估一次
+        // 啟動初期的裝置列舉事件一律忽略(否則「開啟 App 時關閉螢幕」會被誤判為連線而又開回來);
+        // 4 秒後以當時的狀態為基準,只對之後真正的變化(有到無、無到有)反應。
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-            Task { @MainActor in self?.applyAuto() }
+            Task { @MainActor in
+                guard let self, self.monitoring else { return }
+                self.lastPresent = PointerPresence.shared.isPresent
+                self.armed = true
+                // 一個裝置都沒有時不會有連上 / 移除事件,所以依斷線設定評估一次
+                if !self.lastPresent { self.turnOffForDisconnect() }
+            }
         }
     }
 
-    private func applyAuto() {
-        guard autoMode, !busy else { return }
-        if PointerPresence.shared.isPresent { wake() } else if offOnDisconnect && !isOff && !suppressAutoOff { toggle() }
+    private func stopMonitoring() {
+        monitoring = false
+        armed = false
+        PointerPresence.shared.stop()
+    }
+
+    private func presenceChanged() {
+        guard monitoring, armed else { return }
+        let present = PointerPresence.shared.isPresent
+        guard present != lastPresent else { return }
+        lastPresent = present
+        suppressAutoOff = false
+        if present {
+            if onConnectWake { wake() }
+        } else {
+            turnOffForDisconnect()
+        }
+    }
+
+    private func turnOffForDisconnect() {
+        guard offOnDisconnect, !isOff, !suppressAutoOff else { return }
+        toggle()
     }
 
     /// 還原內建螢幕(視窗、Dock 選單、實體滑鼠皆走這裡)。
@@ -363,13 +402,12 @@ struct ContentView: View {
 
             Form {
                 Section {
-                    Toggle("自動模式", isOn: $model.autoMode)
+                    Toggle("連線時自動開啟螢幕", isOn: $model.onConnectWake)
                     Toggle("斷線時自動關閉螢幕", isOn: $model.offOnDisconnect)
-                        .disabled(!model.autoMode)
                 } header: {
-                    Text("自動")
+                    Text("連線偵測")
                 } footer: {
-                    Text("滑鼠 / 觸控板連線時自動開啟螢幕。")
+                    Text("依實體滑鼠 / 觸控板(藍牙或有線)的連線狀態自動切換。")
                         .fixedSize(horizontal: false, vertical: true)
                 }
 

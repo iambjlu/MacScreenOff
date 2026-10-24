@@ -39,7 +39,7 @@ CLAUDE.md              專案規則
 - `applicationDidFinishLaunching`:先呼叫 `PanelController.restore()`(依 `UserDefaults` 記錄恢復上次被停用的面板),
   再攔截 SIGTERM / SIGINT / SIGHUP:收到時先 `restore()` 再 `exit(0)`
   (因為 `pkill` 的 SIGTERM 不會觸發 `applicationWillTerminate`)。
-- 啟動時呼叫 `Model.bootstrap()`(自動模式監控)與 `Model.applyLaunchBehavior()`(「開啟 App 時」的設定)。
+- 啟動時呼叫 `Model.bootstrap()`(連線偵測監控)與 `Model.applyLaunchBehavior()`(「開啟 App 時」的設定)。
 - 由登入項目啟動時隱藏視窗:檢查啟動 Apple Event 的 `prdt` 屬性是否為 `lgit`,是就在 0.3 / 1.0 / 2.5 秒各呼叫一次
   `NSApp.hide(nil)`(Dock 圖示仍在,點擊可再顯示)。此判斷依賴系統的啟動事件,尚未在實機驗證。
 - `applicationWillTerminate`:呼叫 `restore()`。
@@ -50,15 +50,17 @@ CLAUDE.md              專案規則
 ### Model(`@MainActor`,`ObservableObject`,單例 `Model.shared`)
 - UI 狀態:`isOff`、`busy`、`message`。
 - `toggle()`:`busy` 時忽略;目前為關閉狀態則走 `wake()`;否則先 `MouseWatcher.start()`
-  (「能用實體滑鼠 / 觸控板喚醒」是必要條件,手動與自動模式都一樣;失敗就把原因放進 `message` 並取消),
+  (「能用實體滑鼠 / 觸控板喚醒」是必要條件,手動、連線偵測與開啟 App 時的設定都一樣;失敗就把原因放進 `message` 並取消),
   再呼叫 `PanelController.activate`;成功後 `isOff = true`,失敗則停止 `MouseWatcher` 並顯示錯誤訊息。
-- 自動模式(`autoMode`,存於 `UserDefaults` 的 `autoMode`,視窗內有開關):給遠端使用的情境。
-  `PointerPresence` 回報有裝置 → `wake()`;沒有裝置且 `offOnDisconnect` 為 true → `toggle()` 關閉螢幕。
-  `offOnDisconnect`(存於 `UserDefaults` 的 `offOnDisconnect`,預設 true,視窗內「斷線時自動關閉螢幕」開關,僅自動模式開啟時可用)
-  決定斷線是否關閉螢幕;連線時一律開啟。開啟時與啟動時(`bootstrap()`)
-  開始監控,並在 4 秒後主動評估一次(一個裝置都沒有時不會有連上事件)。
-- `suppressAutoOff`:`wake()` 成功時設為 true(實體滑鼠 / 觸控板操作、手動按鈕都算),自動模式在它為 true 時不會再關螢幕,
-  直到下一次 `PointerPresence.onChange`(裝置連上或移除)才清除,避免「有人實際操作但系統判定沒有裝置」時來回開關。
+- 連線偵測(給遠端使用的情境)由兩個獨立選項控制,任一開啟就會啟動 `PointerPresence` 監控,兩者都關閉就停止:
+  - `onConnectWake`(`UserDefaults` 的 `onConnectWake`,視窗「連線時自動開啟螢幕」):實體滑鼠 / 觸控板從無到有時 `wake()`。
+  - `offOnDisconnect`(`UserDefaults` 的 `offOnDisconnect`,視窗「斷線時自動關閉螢幕」):全部斷線時 `toggle()` 關閉螢幕。
+  - 兩者尚未設定過時沿用舊版 `autoMode` 的值(`initialFlag`),預設都是關閉。
+- 只對「真正的狀態變化」反應:`startMonitoring()` 先忽略啟動初期的裝置列舉事件,4 秒後記下當時是否有裝置(`lastPresent`)並開始處理事件;
+  `presenceChanged()` 只在有 / 無狀態與 `lastPresent` 不同時才動作。這避免「開啟 App 時關閉螢幕」被誤判為連線而又開回來。
+  一個裝置都沒有時不會有事件,所以 4 秒時若沒有裝置就依 `offOnDisconnect` 評估一次。
+- `suppressAutoOff`:`wake()` 成功時設為 true(實體滑鼠 / 觸控板操作、手動按鈕都算),斷線關閉在它為 true 時不動作,
+  直到下一次有 / 無狀態變化才清除,避免「有人實際操作但系統判定沒有裝置」時來回開關。
 - `isOff` 每次變動都寫入 `UserDefaults` 的 `lastWasOff`;結束 App 時面板雖會被恢復,但這個記錄不會被清掉,
   供「恢復上次退出時的狀態」使用。
 - `launchBehavior`(`LaunchBehavior`:`restoreLast` / `screenOn` / `screenOff`,存於 `UserDefaults` 的 `launchBehavior`,
@@ -94,8 +96,7 @@ CLAUDE.md              專案規則
 - `ScreenOffApp`(`@main`):`init()` 先跑 `runWatchdogIfRequested()`;場景為 `WindowGroup`(固定內容大小視窗),
   不再使用選單列項目。以 `@NSApplicationDelegateAdaptor` 掛上 `AppDelegate`。
 - `ContentView`:上方是狀態圖示(`display` / `display.slash`)、狀態文字、切換按鈕(忙碌時停用)與錯誤訊息;
-  下方是分組列表(`Form` + `.formStyle(.grouped)` + `.toggleStyle(.switch)`):「自動」區有「自動模式」與「斷線時自動關閉螢幕」
-  (未開啟自動模式時停用),「啟動」區有「登入時開啟 App(隱藏視窗)」開關與「開啟 App 時」選單。
+  下方是分組列表(`Form` + `.formStyle(.grouped)` + `.toggleStyle(.switch)`):「連線偵測」區有「連線時自動開啟螢幕」與「斷線時自動關閉螢幕」,「啟動」區有「登入時開啟 App(隱藏視窗)」開關與「開啟 App 時」選單。
   說明文字都加上 `fixedSize(horizontal: false, vertical: true)` 以換行顯示,避免被截成「…」;視窗寬 400,列表固定高 300。
 
 ### PanelController(單例)
@@ -125,8 +126,8 @@ CLAUDE.md              專案規則
 
 ## 執行流程摘要
 1. 啟動 → `runWatchdogIfRequested()`(非看門狗模式直接返回)→ `AppDelegate` 啟動時先 `restore()`、安裝訊號攔截。
-2. 按「關閉內建螢幕」(或自動模式判定沒有裝置且允許斷線關閉)→ `Model.toggle()` → `MouseWatcher.start()`
+2. 按「關閉內建螢幕」(或「斷線時自動關閉螢幕」偵測到裝置全部斷線)→ `Model.toggle()` → `MouseWatcher.start()`
    (失敗則取消)→ `PanelController.activate` 停用面板、啟動看門狗、持有防熄屏斷言。
-3. 實體滑鼠 / 觸控板有動作(或自動模式偵測到裝置連線)→ `Model.wake()` → 停止監聽、`restore()`(重新啟用面板、終止看門狗、釋放斷言)。
+3. 實體滑鼠 / 觸控板有動作(或「連線時自動開啟螢幕」偵測到裝置連線)→ `Model.wake()` → 停止監聽、`restore()`(重新啟用面板、終止看門狗、釋放斷言)。
 4. 主程式被 Force Quit / `kill -9` → 看門狗偵測到 PID 消失,重新啟用面板。
 5. 下次啟動 → `restore()` 依 `UserDefaults` 記錄再恢復一次(保險)。
