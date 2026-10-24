@@ -54,6 +54,8 @@ CLAUDE.md              專案規則
   再呼叫 `PanelController.activate`;成功後 `isOff = true`,失敗則停止 `MouseWatcher` 並顯示錯誤訊息。
 - 連線偵測(給遠端使用的情境)由兩個獨立選項控制,任一開啟就會啟動 `PointerPresence` 監控,兩者都關閉就停止:
   - `onConnectWake`(`UserDefaults` 的 `onConnectWake`,視窗「連線時自動開啟螢幕」):實體滑鼠 / 觸控板從無到有時 `wake()`。
+    把它從開啟切到關閉時不會直接生效:`ContentView` 以自訂 `Binding` 攔截,先設 `confirmDisableConnectWake = true`
+    跳出確認對話框,按「關閉」才真的寫入 `false`,「取消」維持開啟(從關閉切到開啟不需要確認)。
   - `offOnDisconnect`(`UserDefaults` 的 `offOnDisconnect`,視窗「斷線時自動關閉螢幕」):全部斷線時 `toggle()` 關閉螢幕。
   - 兩者尚未設定過時沿用舊版 `autoMode` 的值(`initialFlag`),預設都是關閉。
 - 只對「真正的狀態變化」反應:`startMonitoring()` 先忽略啟動初期的裝置列舉事件,4 秒後記下當時是否有裝置(`lastPresent`)並開始處理事件;

@@ -100,6 +100,8 @@ final class Model: ObservableObject {
     @Published var message: String?
     /// 實體操作(或手動)恢復螢幕後,在下一次裝置連上 / 移除之前,不會因「斷線」而自動關閉螢幕。
     private var suppressAutoOff = false
+    /// 要關閉「連線時自動開啟螢幕」時先跳出確認對話框(它是恢復螢幕的保護機制之一)。
+    @Published var confirmDisableConnectWake = false
     /// 實體滑鼠 / 觸控板從無到有(連線)時是否自動開啟螢幕。
     @Published var onConnectWake = initialFlag("onConnectWake") {
         didSet { UserDefaults.standard.set(onConnectWake, forKey: "onConnectWake"); updateMonitoring() }
@@ -402,7 +404,12 @@ struct ContentView: View {
 
             Form {
                 Section {
-                    Toggle("連線時自動開啟螢幕", isOn: $model.onConnectWake)
+                    Toggle("連線時自動開啟螢幕", isOn: Binding(
+                        get: { model.onConnectWake },
+                        set: { on in
+                            if on { model.onConnectWake = true } else { model.confirmDisableConnectWake = true }
+                        }
+                    ))
                     Toggle("斷線時自動關閉螢幕", isOn: $model.offOnDisconnect)
                 } header: {
                     Text("連線偵測")
@@ -422,6 +429,12 @@ struct ContentView: View {
             }
             .formStyle(.grouped)
             .toggleStyle(.switch)
+            .alert("要關閉「連線時自動開啟螢幕」嗎?", isPresented: $model.confirmDisableConnectWake) {
+                Button("關閉", role: .destructive) { model.onConnectWake = false }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("關閉後,滑鼠或觸控板連線時不會自動開啟螢幕。移動實體滑鼠 / 觸控板、遠端按「重新開啟螢幕」或結束 App 仍可恢復。")
+            }
             .scrollDisabled(true)
             .frame(height: 300)
 
