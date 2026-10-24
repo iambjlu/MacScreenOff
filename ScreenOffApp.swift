@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 上次被 pkill / 崩潰而沒恢復時,啟動就把記錄中被停用的內建面板重新啟用
         PanelController.shared.restore()
+        Task { @MainActor in Model.shared.bootstrap() }
         // pkill(SIGTERM)不會呼叫 applicationWillTerminate,所以自己攔截並先恢復螢幕
         for sig in [SIGTERM, SIGINT, SIGHUP] {
             signal(sig, SIG_IGN)
@@ -67,6 +68,14 @@ final class Model: ObservableObject {
     @Published var isOff = false
     @Published var busy = false
     @Published var message: String?
+    /// 實體操作(或手動)恢復螢幕後,在下一次裝置連上 / 移除事件之前,自動模式不再關閉螢幕。
+    private var suppressAutoOff = false
+    @Published var autoMode = UserDefaults.standard.bool(forKey: "autoMode") {
+        didSet {
+            UserDefaults.standard.set(autoMode, forKey: "autoMode")
+            if autoMode { startAuto() } else { PointerPresence.shared.stop() }
+        }
+    }
 
     func toggle() {
         guard !busy else { return }
@@ -84,12 +93,100 @@ final class Model: ObservableObject {
         }
     }
 
+    // MARK: 自動模式:有實體滑鼠 / 觸控板連線就開螢幕,沒有就關螢幕(給遠端使用)
+
+    /// 啟動時依記住的設定開始監控。
+    func bootstrap() { if autoMode { startAuto() } }
+
+    private func startAuto() {
+        PointerPresence.shared.onChange = { [weak self] in
+            Task { @MainActor in self?.suppressAutoOff = false; self?.applyAuto() }
+        }
+        suppressAutoOff = false
+        PointerPresence.shared.start()
+        // 一個裝置都沒有時不會有連上事件,所以主動評估一次
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            Task { @MainActor in self?.applyAuto() }
+        }
+    }
+
+    private func applyAuto() {
+        guard autoMode, !busy else { return }
+        if PointerPresence.shared.isPresent { wake() } else if !isOff && !suppressAutoOff { toggle() }
+    }
+
     /// 還原內建螢幕(視窗、Dock 選單、實體滑鼠皆走這裡)。
     func wake() {
         guard isOff else { return }
+        suppressAutoOff = true
         MouseWatcher.shared.stop()
         PanelController.shared.restore()
         isOff = false
+    }
+}
+
+/// 滑鼠(含 Magic Mouse)與觸控板(含 Magic Trackpad)的 HID 配對條件。
+enum PointerDevices {
+    static let matching: [[String: Any]] = [
+        [kIOHIDDeviceUsagePageKey: Int(kHIDPage_GenericDesktop), kIOHIDDeviceUsageKey: Int(kHIDUsage_GD_Mouse)],
+        [kIOHIDDeviceUsagePageKey: Int(kHIDPage_GenericDesktop), kIOHIDDeviceUsageKey: Int(kHIDUsage_GD_Pointer)],
+        [kIOHIDDeviceUsagePageKey: Int(kHIDPage_Digitizer), kIOHIDDeviceUsageKey: Int(kHIDUsage_Dig_TouchPad)],
+    ]
+}
+
+/// 監控實體滑鼠 / 觸控板(藍牙或有線)是否連線:以 HID 裝置的連上 / 移除事件即時偵測。
+/// Magic Mouse 2(0x004C/0x0269)、Magic Trackpad 2(0x004C/0x0265)等藍牙裝置連線後都會成為 HID 裝置。
+/// 裝置數量變動後延遲 3 秒才通知,避免瞬間斷線造成誤動作。
+final class PointerPresence {
+    static let shared = PointerPresence()
+    private var manager: IOHIDManager?
+    private var devices = Set<Int>()
+    private var pending: DispatchWorkItem?
+    var onChange: (() -> Void)?
+
+    var isPresent: Bool { !devices.isEmpty }
+
+    func start() {
+        guard manager == nil else { return }
+        let mgr = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+        IOHIDManagerSetDeviceMatchingMultiple(mgr, PointerDevices.matching as CFArray)
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        IOHIDManagerRegisterDeviceMatchingCallback(mgr, { ctx, _, _, device in
+            guard let ctx else { return }
+            Unmanaged<PointerPresence>.fromOpaque(ctx).takeUnretainedValue().changed(device, added: true)
+        }, ctx)
+        IOHIDManagerRegisterDeviceRemovalCallback(mgr, { ctx, _, _, device in
+            guard let ctx else { return }
+            Unmanaged<PointerPresence>.fromOpaque(ctx).takeUnretainedValue().changed(device, added: false)
+        }, ctx)
+        IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
+        manager = mgr
+    }
+
+    func stop() {
+        if let mgr = manager {
+            IOHIDManagerUnscheduleFromRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+            IOHIDManagerClose(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
+        }
+        manager = nil
+        devices.removeAll()
+        pending?.cancel()
+        pending = nil
+    }
+
+    private func changed(_ device: IOHIDDevice, added: Bool) {
+        let key = Int(bitPattern: Unmanaged.passUnretained(device).toOpaque())
+        if added {
+            if IOHIDDeviceGetProperty(device, kIOHIDTransportKey as CFString) as? String == "Virtual" { return }
+            devices.insert(key)
+        } else {
+            devices.remove(key)
+        }
+        pending?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.onChange?() }
+        pending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
     }
 }
 
@@ -105,13 +202,7 @@ final class MouseWatcher {
         stop()
         armedAt = Date().addingTimeInterval(grace)
         let mgr = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
-        // 滑鼠(含 Magic Mouse)與觸控板(含 Magic Trackpad)
-        let match: [[String: Any]] = [
-            [kIOHIDDeviceUsagePageKey: Int(kHIDPage_GenericDesktop), kIOHIDDeviceUsageKey: Int(kHIDUsage_GD_Mouse)],
-            [kIOHIDDeviceUsagePageKey: Int(kHIDPage_GenericDesktop), kIOHIDDeviceUsageKey: Int(kHIDUsage_GD_Pointer)],
-            [kIOHIDDeviceUsagePageKey: Int(kHIDPage_Digitizer), kIOHIDDeviceUsageKey: Int(kHIDUsage_Dig_TouchPad)],
-        ]
-        IOHIDManagerSetDeviceMatchingMultiple(mgr, match as CFArray)
+        IOHIDManagerSetDeviceMatchingMultiple(mgr, PointerDevices.matching as CFArray)
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         IOHIDManagerRegisterInputValueCallback(mgr, { ctx, _, sender, value in
             guard let ctx else { return }
@@ -187,6 +278,11 @@ struct ContentView: View {
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.large)
                 .disabled(model.busy)
+
+            Toggle("自動模式", isOn: $model.autoMode)
+            Text("沒有滑鼠 / 觸控板連線時自動關閉螢幕,連線時自動開啟。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
 
             if let m = model.message { Text(m).font(.caption).foregroundStyle(.red) }
             Text("運作期間不會自動熄屏。\n移動實體滑鼠即可恢復螢幕;結束 App 也會恢復。")

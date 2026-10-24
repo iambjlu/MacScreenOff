@@ -48,12 +48,25 @@ CLAUDE.md              專案規則
 - UI 狀態:`isOff`、`busy`、`message`。
 - `toggle()`:`busy` 時忽略;目前為關閉狀態則走 `wake()`;否則呼叫 `PanelController.activate`,
   成功後 `isOff = true` 並啟動 `MouseWatcher`,失敗則把錯誤訊息放進 `message`。
+- 自動模式(`autoMode`,存於 `UserDefaults` 的 `autoMode`,視窗內有開關):給遠端使用的情境。
+  `PointerPresence` 回報有裝置 → `wake()`;沒有裝置 → `toggle()` 關閉螢幕。開啟時與啟動時(`bootstrap()`)
+  開始監控,並在 4 秒後主動評估一次(一個裝置都沒有時不會有連上事件)。
+- `suppressAutoOff`:`wake()` 成功時設為 true(實體滑鼠 / 觸控板操作、手動按鈕都算),自動模式在它為 true 時不會再關螢幕,
+  直到下一次 `PointerPresence.onChange`(裝置連上或移除)才清除,避免「有人實際操作但系統判定沒有裝置」時來回開關。
 - `wake()`:停止 `MouseWatcher`、呼叫 `PanelController.restore()`、`isOff = false`。
   視窗按鈕、Dock 選單、實體滑鼠偵測都走這裡。
 
+### PointerDevices 與 PointerPresence
+- `PointerDevices.matching`:HID 配對條件(GenericDesktop/Mouse、GenericDesktop/Pointer、Digitizer/TouchPad),
+  `MouseWatcher` 與 `PointerPresence` 共用。
+- `PointerPresence`(單例):以 `IOHIDManager` 的 device matching / removal callback 即時追蹤實體指標裝置是否連線
+  (Magic Mouse 2 的 0x004C/0x0269、Magic Trackpad 2 的 0x004C/0x0265 等藍牙裝置連線後都會成為 HID 裝置;有線裝置同樣算)。
+  `Virtual` 傳輸的裝置不計。`isPresent` 表示目前是否至少有一個裝置;裝置數量變動後延遲 3 秒才呼叫 `onChange`,
+  避免瞬間斷線誤動作。`start()` / `stop()` 負責建立與釋放監控。
+
 ### MouseWatcher(單例)
-- 以 `IOHIDManager` 配對三種裝置並註冊 input value callback,掛在主 run loop:GenericDesktop/Mouse、
-  GenericDesktop/Pointer、Digitizer/TouchPad(涵蓋 Magic Mouse 與 Magic Trackpad)。
+- 以 `IOHIDManager` 依 `PointerDevices.matching` 配對裝置(涵蓋 Magic Mouse 與 Magic Trackpad)
+  並註冊 input value callback,掛在主 run loop。
 - 只有「實體」HID 裝置會產生事件;螢幕共享是系統層級注入的事件,不經過 HID 裝置,因此不會誤觸發。
   另外過濾 `kIOHIDTransportKey == "Virtual"` 的裝置。
 - 裝置分兩類:主要 usage page 為 Digitizer、或產品名稱含 "trackpad" 的視為觸控板,其餘視為滑鼠。
@@ -96,8 +109,8 @@ CLAUDE.md              專案規則
 
 ## 執行流程摘要
 1. 啟動 → `runWatchdogIfRequested()`(非看門狗模式直接返回)→ `AppDelegate` 啟動時先 `restore()`、安裝訊號攔截。
-2. 按「關閉內建螢幕」→ `Model.toggle()` → `PanelController.activate` 停用面板、啟動看門狗、持有防熄屏斷言
-   → 成功後 `MouseWatcher.start()`。
-3. 實體滑鼠有動作 → `Model.wake()` → 停止監聽、`restore()`(重新啟用面板、終止看門狗、釋放斷言)。
+2. 按「關閉內建螢幕」(或自動模式判定沒有裝置)→ `Model.toggle()` → `PanelController.activate`
+   停用面板、啟動看門狗、持有防熄屏斷言 → 成功後 `MouseWatcher.start()`。
+3. 實體滑鼠 / 觸控板有動作(或自動模式偵測到裝置連線)→ `Model.wake()` → 停止監聽、`restore()`(重新啟用面板、終止看門狗、釋放斷言)。
 4. 主程式被 Force Quit / `kill -9` → 看門狗偵測到 PID 消失,重新啟用面板。
 5. 下次啟動 → `restore()` 依 `UserDefaults` 記錄再恢復一次(保險)。

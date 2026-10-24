@@ -12,6 +12,7 @@
 | --- | --- |
 | `PanelController` | 呼叫 `CGSConfigureDisplayEnabled` 停用內建面板,並以 `IOPMAssertion` 阻止閒置熄屏 |
 | `MouseWatcher` | 用 `IOHIDManager` 監聽**實體** HID 滑鼠與觸控板(含 Magic Mouse / Magic Trackpad),有動作就恢復螢幕(遠端注入的事件不經過 HID 裝置,不會誤觸發) |
+| `PointerPresence` | 即時追蹤實體滑鼠 / 觸控板(藍牙或有線)是否連線,供自動模式使用 |
 | 看門狗 `so-watchdog` | `.app` 內的獨立行程,盯著主程式 PID;主程式以任何方式結束(包含 Force Quit / `kill -9`)都會把面板重新啟用 |
 | 啟動自救 | 停用的顯示器 ID 會存進 `UserDefaults`,下次啟動時先重新啟用 |
 
@@ -34,6 +35,8 @@ open ScreenOff.app
 ## 使用
 
 1. 開啟 App,按「關閉內建螢幕」(或在 Dock 圖示上按右鍵選同樣的項目)。
+   也可以勾選「自動模式」(給遠端使用):沒有實體滑鼠 / 觸控板連線時自動關閉螢幕,連線時自動開啟;
+   即使系統沒偵測到連線,只要有實體滑鼠 / 觸控板的操作,也會開啟(之後要等下一次裝置連上或移除才會再自動關閉)。
 2. 面板關閉後,仍可由螢幕共享連線操作。運作期間不會自動熄屏。
 3. 移動實體滑鼠即可恢復;也可從遠端按「重新開啟螢幕」,或結束 App。
 4. 關閉視窗不會退出 App,Dock 圖示會常駐。
