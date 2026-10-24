@@ -46,10 +46,13 @@ CLAUDE.md              專案規則
 
 ### Model(`@MainActor`,`ObservableObject`,單例 `Model.shared`)
 - UI 狀態:`isOff`、`busy`、`message`。
-- `toggle()`:`busy` 時忽略;目前為關閉狀態則走 `wake()`;否則呼叫 `PanelController.activate`,
-  成功後 `isOff = true` 並啟動 `MouseWatcher`,失敗則把錯誤訊息放進 `message`。
+- `toggle()`:`busy` 時忽略;目前為關閉狀態則走 `wake()`;否則先 `MouseWatcher.start()`
+  (「能用實體滑鼠 / 觸控板喚醒」是必要條件,手動與自動模式都一樣;失敗就把原因放進 `message` 並取消),
+  再呼叫 `PanelController.activate`;成功後 `isOff = true`,失敗則停止 `MouseWatcher` 並顯示錯誤訊息。
 - 自動模式(`autoMode`,存於 `UserDefaults` 的 `autoMode`,視窗內有開關):給遠端使用的情境。
-  `PointerPresence` 回報有裝置 → `wake()`;沒有裝置 → `toggle()` 關閉螢幕。開啟時與啟動時(`bootstrap()`)
+  `PointerPresence` 回報有裝置 → `wake()`;沒有裝置且 `offOnDisconnect` 為 true → `toggle()` 關閉螢幕。
+  `offOnDisconnect`(存於 `UserDefaults` 的 `offOnDisconnect`,預設 true,視窗內「斷線時自動關閉螢幕」開關,僅自動模式開啟時可用)
+  決定斷線是否關閉螢幕;連線時一律開啟。開啟時與啟動時(`bootstrap()`)
   開始監控,並在 4 秒後主動評估一次(一個裝置都沒有時不會有連上事件)。
 - `suppressAutoOff`:`wake()` 成功時設為 true(實體滑鼠 / 觸控板操作、手動按鈕都算),自動模式在它為 true 時不會再關螢幕,
   直到下一次 `PointerPresence.onChange`(裝置連上或移除)才清除,避免「有人實際操作但系統判定沒有裝置」時來回開關。
@@ -73,8 +76,10 @@ CLAUDE.md              專案規則
 - 滑鼠的有效事件:X / Y / 滾輪非零位移,或任一按鈕按下。
 - 觸控板的有效事件:任何非零的輸入值(觸控板只在有觸控時才送報告),但排除恆為非零的 Digitizer Scan Time(0x56)。
 - 觸發後以 `Task { @MainActor }` 呼叫 `Model.shared.wake()`。
-- `start(grace: 3)`:啟動後 3 秒內忽略事件,避免按下按鈕時的滑鼠動作立刻觸發還原。`stop()` 關閉並重置。
-- 可能需要「輸入監控」權限。
+- `start(grace: 3) -> Bool`:先以 `IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)` 檢查「輸入監控」授權,
+  未授權就呼叫 `IOHIDRequestAccess` 並回傳 false;`IOHIDManagerOpen` 失敗也回傳 false。成功後 3 秒內忽略事件,
+  避免按下按鈕時的滑鼠動作立刻觸發還原。`stop()` 關閉並重置。
+- 回傳 false 時 `Model.toggle()` 不會關閉螢幕,確保任何關閉方式都能由實體裝置恢復。
 
 ### ScreenOffApp 與 ContentView
 - `ScreenOffApp`(`@main`):`init()` 先跑 `runWatchdogIfRequested()`;場景為 `WindowGroup`(固定內容大小視窗),
@@ -109,8 +114,8 @@ CLAUDE.md              專案規則
 
 ## 執行流程摘要
 1. 啟動 → `runWatchdogIfRequested()`(非看門狗模式直接返回)→ `AppDelegate` 啟動時先 `restore()`、安裝訊號攔截。
-2. 按「關閉內建螢幕」(或自動模式判定沒有裝置)→ `Model.toggle()` → `PanelController.activate`
-   停用面板、啟動看門狗、持有防熄屏斷言 → 成功後 `MouseWatcher.start()`。
+2. 按「關閉內建螢幕」(或自動模式判定沒有裝置且允許斷線關閉)→ `Model.toggle()` → `MouseWatcher.start()`
+   (失敗則取消)→ `PanelController.activate` 停用面板、啟動看門狗、持有防熄屏斷言。
 3. 實體滑鼠 / 觸控板有動作(或自動模式偵測到裝置連線)→ `Model.wake()` → 停止監聽、`restore()`(重新啟用面板、終止看門狗、釋放斷言)。
 4. 主程式被 Force Quit / `kill -9` → 看門狗偵測到 PID 消失,重新啟用面板。
 5. 下次啟動 → `restore()` 依 `UserDefaults` 記錄再恢復一次(保險)。

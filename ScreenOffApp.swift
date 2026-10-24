@@ -70,6 +70,10 @@ final class Model: ObservableObject {
     @Published var message: String?
     /// 實體操作(或手動)恢復螢幕後,在下一次裝置連上 / 移除事件之前,自動模式不再關閉螢幕。
     private var suppressAutoOff = false
+    /// 自動模式下,實體滑鼠 / 觸控板全部斷線時是否關閉螢幕(連線時一律會開啟)。
+    @Published var offOnDisconnect = (UserDefaults.standard.object(forKey: "offOnDisconnect") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(offOnDisconnect, forKey: "offOnDisconnect") }
+    }
     @Published var autoMode = UserDefaults.standard.bool(forKey: "autoMode") {
         didSet {
             UserDefaults.standard.set(autoMode, forKey: "autoMode")
@@ -83,12 +87,17 @@ final class Model: ObservableObject {
         if isOff {
             wake()
         } else {
+            // 必要條件:能用實體滑鼠 / 觸控板喚醒。監聽啟動失敗就不關螢幕(手動與自動皆同)。
+            guard MouseWatcher.shared.start() else {
+                message = "無法監聽實體滑鼠 / 觸控板,已取消關閉。請到「系統設定 > 隱私權與安全性 > 輸入監控」授權 ScreenOff 後再試。"
+                return
+            }
             busy = true
             PanelController.shared.activate { [self] error in
                 busy = false
                 message = error
                 isOff = PanelController.shared.isActive
-                if isOff { MouseWatcher.shared.start() }
+                if !isOff { MouseWatcher.shared.stop() }
             }
         }
     }
@@ -112,7 +121,7 @@ final class Model: ObservableObject {
 
     private func applyAuto() {
         guard autoMode, !busy else { return }
-        if PointerPresence.shared.isPresent { wake() } else if !isOff && !suppressAutoOff { toggle() }
+        if PointerPresence.shared.isPresent { wake() } else if offOnDisconnect && !isOff && !suppressAutoOff { toggle() }
     }
 
     /// 還原內建螢幕(視窗、Dock 選單、實體滑鼠皆走這裡)。
@@ -198,8 +207,14 @@ final class MouseWatcher {
     private var armedAt = Date.distantFuture
 
     /// grace:啟動後的緩衝秒數,避免按下按鈕時的滑鼠動作立刻觸發還原。
-    func start(grace: TimeInterval = 3) {
+    /// 回傳 false 代表無法監聽實體裝置(通常是尚未授權「輸入監控」)。此時不應該關閉螢幕,否則無法在本機喚醒。
+    @discardableResult
+    func start(grace: TimeInterval = 3) -> Bool {
         stop()
+        guard IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted else {
+            _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)   // 第一次會跳出授權提示
+            return false
+        }
         armedAt = Date().addingTimeInterval(grace)
         let mgr = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
         IOHIDManagerSetDeviceMatchingMultiple(mgr, PointerDevices.matching as CFArray)
@@ -209,8 +224,12 @@ final class MouseWatcher {
             Unmanaged<MouseWatcher>.fromOpaque(ctx).takeUnretainedValue().handle(sender: sender, value: value)
         }, ctx)
         IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
-        IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
+        guard IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone)) == kIOReturnSuccess else {
+            IOHIDManagerUnscheduleFromRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+            return false
+        }
         manager = mgr
+        return true
     }
 
     func stop() {
@@ -280,9 +299,13 @@ struct ContentView: View {
                 .disabled(model.busy)
 
             Toggle("自動模式", isOn: $model.autoMode)
-            Text("沒有滑鼠 / 觸控板連線時自動關閉螢幕,連線時自動開啟。")
+            Toggle("斷線時自動關閉螢幕", isOn: $model.offOnDisconnect)
+                .disabled(!model.autoMode)
+                .padding(.leading, 18)
+            Text("滑鼠 / 觸控板連線時自動開啟螢幕。無論自動或手動關閉,移動實體滑鼠或觸控板都會恢復。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
 
             if let m = model.message { Text(m).font(.caption).foregroundStyle(.red) }
             Text("運作期間不會自動熄屏。\n移動實體滑鼠即可恢復螢幕;結束 App 也會恢復。")
