@@ -5,7 +5,7 @@ APP=MacDisplayManager.app
 rm -rf $APP
 mkdir -p $APP/Contents/MacOS $APP/Contents/Resources
 for ARCH in arm64 x86_64; do
-  swiftc -target arm64-apple-macosx13.0 -parse-as-library -O -target $ARCH-apple-macos13.0 MacDisplayManagerApp.swift -o .build-$ARCH
+  swiftc -target arm64-apple-macosx13.0 -parse-as-library -O -target $ARCH-apple-macos13.0 MacDisplayManagerApp.swift VirtualDisplay.swift -import-objc-header CGVirtualDisplay.h -o .build-$ARCH
 done
 lipo -create .build-arm64 .build-x86_64 -output $APP/Contents/MacOS/MacDisplayManager
 rm -f .build-arm64 .build-x86_64

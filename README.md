@@ -1,7 +1,9 @@
 # MacDisplayManager
 
 用 SwiftUI 寫的 macOS 小工具:**直接停用選定的螢幕(預設是 iMac 的內建螢幕面板;面板斷電、省電)**,同時保留螢幕共享的遠端操作。
-移動實體滑鼠時自動恢復螢幕。
+移動實體滑鼠時自動恢復螢幕。另可新增與主要顯示器綁定(鏡像)的虛擬螢幕,支援多種長寬比與 Retina / 標準解析度。
+
+App 有兩個分頁:「關閉螢幕」與「虛擬螢幕」。「虛擬螢幕」頁左邊選長寬比、右邊選解析度即會建立(或更換)虛擬螢幕;使用的也是私有 API(`CGVirtualDisplay`),結束 App 會自動移除。
 
 > ⚠️ 這個專案使用 **私有 API**(`CGSConfigureDisplayEnabled`),適合自用
 > 也不保證在每個 macOS 版本上都有效。使用前請務必在 Mac 前面親自測試。
@@ -70,6 +72,8 @@ open MacDisplayManager.app
 
 ```
 MacDisplayManagerApp.swift   App 本體(UI、PanelController、MouseWatcher、看門狗)
+VirtualDisplay.swift   虛擬螢幕(解析度表、控制器、UI)
+CGVirtualDisplay.h   虛擬顯示器私有介面宣告
 build.sh             編譯、打包、簽署
 make-icon.swift      產生 AppIcon.icns 的腳本
 AppIcon.icns         App 圖示

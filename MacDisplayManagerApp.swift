@@ -83,7 +83,7 @@ func activeDisplayIDs() -> [CGDirectDisplayID] {
 
 /// 目前是否有作用中的非內建(外接)顯示器。
 func activeExternalDisplayExists() -> Bool {
-    activeDisplayIDs().contains { CGDisplayIsBuiltin($0) == 0 }
+    activeDisplayIDs().contains { CGDisplayIsBuiltin($0) == 0 && $0 != VirtualDisplayController.activeID }
 }
 
 /// 顯示器的穩定識別。重新連接或重開機後 CGDirectDisplayID 可能改變,UUID 不會。
@@ -259,7 +259,7 @@ final class Model: ObservableObject {
         var builtin = knownBuiltin
         var list: [DisplayInfo] = []
         var seen = Set<String>()
-        for id in activeDisplayIDs() {
+        for id in activeDisplayIDs() where id != VirtualDisplayController.activeID {
             guard let uuid = displayUUID(id) else { continue }
             let isBuiltin = CGDisplayIsBuiltin(id) != 0
             names[uuid] = displayName(id)
@@ -566,6 +566,20 @@ struct MacDisplayManagerApp: App {
 }
 
 struct ContentView: View {
+    @ObservedObject var model: Model
+
+    var body: some View {
+        TabView {
+            DisplayOffView(model: model)
+                .tabItem { Label("關閉螢幕", systemImage: "display.slash") }
+            VirtualDisplayView()
+                .tabItem { Label("虛擬螢幕", systemImage: "display.2") }
+        }
+    }
+}
+
+/// 「關閉螢幕」頁。
+struct DisplayOffView: View {
     @ObservedObject var model: Model
 
     var body: some View {
