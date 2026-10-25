@@ -17,7 +17,7 @@ func enableDisplays(_ ids: [CGDirectDisplayID]) {
 }
 
 /// 看門狗:獨立行程,盯著主程式 PID;主程式以任何方式結束(含 SIGKILL)就恢復內建面板。
-/// 用 `so-watchdog` 這個獨立檔名,避免被 `pkill ScreenOff` 一起殺掉。
+/// 用 `mdm-watchdog` 這個獨立檔名,避免被 `pkill MacDisplayManager` 一起殺掉。
 func runWatchdogIfRequested() {
     let args = CommandLine.arguments
     guard let i = args.firstIndex(of: "--watchdog"), args.count > i + 2,
@@ -204,7 +204,7 @@ final class Model: ObservableObject {
             do {
                 if launchAtLogin { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
                 if SMAppService.mainApp.status == .requiresApproval {
-                    message = "請到「系統設定 > 一般 > 登入項目與延伸功能」允許 ScreenOff。"
+                    message = "請到「系統設定 > 一般 > 登入項目與延伸功能」允許 MacDisplayManager。"
                     SMAppService.openSystemSettingsLoginItems()
                 }
             } catch {
@@ -551,7 +551,7 @@ final class MouseWatcher {
 }
 
 @main
-struct ScreenOffApp: App {
+struct MacDisplayManagerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = Model.shared
 
@@ -683,7 +683,7 @@ struct KeepOffConfirmView: View {
 
     private let texts = [
         "啟用後,移動實體滑鼠 / 觸控板,或藍牙 / 有線裝置連線,都不會再開啟螢幕。",
-        "螢幕關閉後,本機將無法靠滑鼠或觸控板喚醒。只能從螢幕共享或 SSH 連進來按「重新開啟螢幕」、結束 App(pkill ScreenOff),或重新開機。若遠端也連不上,你會被擋在外面。",
+        "螢幕關閉後,本機將無法靠滑鼠或觸控板喚醒。只能從螢幕共享或 SSH 連進來按「重新開啟螢幕」、結束 App(pkill MacDisplayManager),或重新開機。若遠端也連不上,你會被擋在外面。",
         "最後確認:你已確認遠端連線可用,並接受本機無法喚醒螢幕的風險。確定要啟用嗎?",
     ]
 
@@ -728,7 +728,7 @@ final class PanelController {
         guard sleepAssertion == 0 else { return }
         IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
                                     IOPMAssertionLevel(kIOPMAssertionLevelOn),
-                                    "ScreenOff: selected display(s) disabled" as CFString,
+                                    "MacDisplayManager: selected display(s) disabled" as CFString,
                                     &sleepAssertion)
     }
 
@@ -737,7 +737,7 @@ final class PanelController {
     }
 
     private func startWatchdog(_ ids: [CGDirectDisplayID]) {
-        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/so-watchdog")
+        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/mdm-watchdog")
         guard FileManager.default.isExecutableFile(atPath: url.path) else { return }
         let p = Process()
         p.executableURL = url

@@ -1,6 +1,6 @@
-# ScreenOff 專案架構
+# MacDisplayManager 專案架構
 
-ScreenOff 是一個 macOS SwiftUI App:直接停用選定的螢幕(預設是內建螢幕面板;面板斷電、省電),同時保留螢幕共享的遠端操作;
+MacDisplayManager 是一個 macOS SwiftUI App:直接停用選定的螢幕(預設是內建螢幕面板;面板斷電、省電),同時保留螢幕共享的遠端操作;
 實體滑鼠有動作時自動恢復。使用私有 API,僅供自用。
 
 整個專案沒有 Xcode 專案檔,以 `build.sh` 直接呼叫 `swiftc` 編譯並手動打包 `.app`。
@@ -8,7 +8,7 @@ ScreenOff 是一個 macOS SwiftUI App:直接停用選定的螢幕(預設是內�
 ## 目錄結構
 
 ```
-ScreenOffApp.swift     App 本體(全部執行期程式碼)
+MacDisplayManagerApp.swift     App 本體(全部執行期程式碼)
 build.sh               編譯、打包、簽署
 make-icon.swift        產生 AppIcon.icns 的腳本
 AppIcon.icns           App 圖示(由 make-icon.swift 產生後提交)
@@ -18,7 +18,7 @@ CLAUDE.md              專案規則
 .gitignore             忽略 .app、暫存建置檔、.DS_Store
 ```
 
-## ScreenOffApp.swift
+## MacDisplayManagerApp.swift
 
 單一檔案,由上而下依序為以下區塊。
 
@@ -29,11 +29,11 @@ CLAUDE.md              專案規則
 - 找不到符號或 ID 清單為空時直接返回。
 
 ### runWatchdogIfRequested()
-- 看門狗模式入口,在 `ScreenOffApp.init()` 最先被呼叫。
+- 看門狗模式入口,在 `MacDisplayManagerApp.init()` 最先被呼叫。
 - 命令列為 `--watchdog <主程式PID> <顯示器ID,以逗號分隔>` 時進入看門狗模式:每秒以 `kill(pid, 0)` 檢查主程式,
   主程式消失(含 SIGKILL / Force Quit)後呼叫 `enableDisplays` 並 `exit(0)`;沒有該參數時直接返回,App 正常啟動。
-- 看門狗是 `.app/Contents/MacOS/so-watchdog`(與主程式相同的執行檔副本),
-  使用不同檔名,避免被 `pkill ScreenOff` 一併殺掉。
+- 看門狗是 `.app/Contents/MacOS/mdm-watchdog`(與主程式相同的執行檔副本),
+  使用不同檔名,避免被 `pkill MacDisplayManager` 一併殺掉。
 
 ### AppDelegate
 - `applicationDidFinishLaunching`:先呼叫 `PanelController.restore()`(依 `UserDefaults` 記錄恢復上次被停用的面板),
@@ -130,8 +130,8 @@ CLAUDE.md              專案規則
   避免按下按鈕時的滑鼠動作立刻觸發還原。`stop()` 關閉並重置。不需要「輸入監控」授權。
 - 回傳 false 時 `Model.toggle()` 不會關閉螢幕,確保任何關閉方式都能由實體裝置恢復。
 
-### ScreenOffApp 與 ContentView
-- `ScreenOffApp`(`@main`):`init()` 先跑 `runWatchdogIfRequested()`;場景為 `WindowGroup`(固定內容大小視窗),
+### MacDisplayManagerApp 與 ContentView
+- `MacDisplayManagerApp`(`@main`):`init()` 先跑 `runWatchdogIfRequested()`;場景為 `WindowGroup`(固定內容大小視窗),
   不再使用選單列項目。以 `@NSApplicationDelegateAdaptor` 掛上 `AppDelegate`。
 - `ContentView`:上方是狀態圖示(`display` / `display.slash`)、狀態文字、切換按鈕(忙碌時停用)與錯誤訊息;
   下方是分組列表(`Form` + `.formStyle(.grouped)` + `.toggleStyle(.switch)`):「要關閉的螢幕」區為每個螢幕一個開關(`Model.displays`,螢幕關閉期間停用),「連線偵測」區有「連線時自動開啟螢幕」、「斷線時自動關閉螢幕」與「滑鼠移動或連線時也不開啟螢幕」(後者啟用時彈出三步確認的 `KeepOffConfirmView`),「外接顯示器」區有「外接顯示器連接時,關閉選定的螢幕」開關,「啟動」區有「登入時開啟 App(隱藏視窗)」開關與「開啟 App 時」選單。
@@ -147,20 +147,20 @@ CLAUDE.md              專案規則
   再終止看門狗、`releaseAwake()`、清除記錄。可重複呼叫。
 - `holdAwake()` / `releaseAwake()`:停用面板期間持有 `IOPMAssertion`(`PreventUserIdleDisplaySleep`),
   阻止閒置熄屏,同時避免系統因閒置睡眠;恢復時釋放。
-- `startWatchdog(_:)`:以 `Process` 啟動 `so-watchdog`,傳入自己的 PID 與被停用的 ID;找不到執行檔時略過。
+- `startWatchdog(_:)`:以 `Process` 啟動 `mdm-watchdog`,傳入自己的 PID 與被停用的 ID;找不到執行檔時略過。
 - `isActive`:`disabledIDs` 是否非空。
 
 ## build.sh
-1. 清掉舊 `ScreenOff.app`,建立 `Contents/MacOS` 與 `Contents/Resources`。
+1. 清掉舊 `MacDisplayManager.app`,建立 `Contents/MacOS` 與 `Contents/Resources`。
 2. 對 arm64 與 x86_64 各跑一次 `swiftc`(部署目標 macOS 13.0,`-parse-as-library -O`),以 `lipo` 合併為 universal。
-3. 把主程式複製為 `so-watchdog`,複製 `AppIcon.icns` 到 `Resources`。
-4. 寫入 `Info.plist`:`CFBundleIdentifier = local.screenoff`、`CFBundleIconFile = AppIcon`、
+3. 把主程式複製為 `mdm-watchdog`,複製 `AppIcon.icns` 到 `Resources`。
+4. 寫入 `Info.plist`:`CFBundleIdentifier = local.macdisplaymanager`、`CFBundleIconFile = AppIcon`、
    `LSMinimumSystemVersion = 13.0`;沒有 `LSUIElement`,所以有 Dock 圖示。
-5. `codesign --force --deep --sign -`(ad-hoc,`--deep` 讓 `so-watchdog` 一併簽署)。
+5. `codesign --force --deep --sign -`(ad-hoc,`--deep` 讓 `mdm-watchdog` 一併簽署)。
 - 已知:同一個 `swiftc` 指令帶了兩個 `-target`(先 arm64-macosx13.0,再 `$ARCH-apple-macos13.0`),後者生效,不影響結果。
 
 ## make-icon.swift
-- 以 AppKit 繪製 1024 規格的圖示:824/1024 的圓角方塊、深藍到紫的漸層、SF Symbol `display` 染成白色、右下角紅色電源鈕。
+- 以 AppKit 繪製 1024 規格的圖示:824/1024 的圓角方塊、深藍到紫的漸層、SF Symbol `display` 染成白色。
 - 輸出 `AppIcon.iconset`(16 到 512,含 @2x),再用 `iconutil -c icns AppIcon.iconset -o AppIcon.icns` 轉成圖示檔。
 
 ## 執行流程摘要

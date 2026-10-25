@@ -1,4 +1,4 @@
-# ScreenOff
+# MacDisplayManager
 
 用 SwiftUI 寫的 macOS 小工具:**直接停用選定的螢幕(預設是 iMac 的內建螢幕面板;面板斷電、省電)**,同時保留螢幕共享的遠端操作。
 移動實體滑鼠時自動恢復螢幕。
@@ -14,7 +14,7 @@
 | `PanelController` | 呼叫 `CGSConfigureDisplayEnabled` 停用選定的螢幕(預設內建面板),並以 `IOPMAssertion` 阻止閒置熄屏 |
 | `MouseWatcher` | 用 `IOHIDManager` 監聽**實體** HID 滑鼠與觸控板(含 Magic Mouse / Magic Trackpad),有動作就恢復螢幕(遠端注入的事件不經過 HID 裝置,不會誤觸發) |
 | `PointerPresence` | 即時追蹤實體滑鼠 / 觸控板(藍牙或有線)是否連線,供連線偵測選項使用 |
-| 看門狗 `so-watchdog` | `.app` 內的獨立行程,盯著主程式 PID;主程式以任何方式結束(包含 Force Quit / `kill -9`)都會把面板重新啟用 |
+| 看門狗 `mdm-watchdog` | `.app` 內的獨立行程,盯著主程式 PID;主程式以任何方式結束(包含 Force Quit / `kill -9`)都會把面板重新啟用 |
 | 啟動自救 | 停用的顯示器 ID 會存進 `UserDefaults`,下次啟動時先重新啟用 |
 
 為什麼不用 `pmset displaysleepnow`?顯示器睡眠後 WindowServer 不再繪製畫面,螢幕共享會變黑、無法操作。
@@ -28,7 +28,7 @@
 
 ```sh
 ./build.sh
-open ScreenOff.app
+open MacDisplayManager.app
 ```
 
 `build.sh` 會編譯 arm64 與 x86_64、合併為 universal、複製看門狗執行檔、放入圖示,並以 ad-hoc 簽署。
@@ -56,7 +56,7 @@ open ScreenOff.app
 ## 緊急恢復
 
 - 動一下實體滑鼠。
-- 從遠端或 SSH:`pkill ScreenOff`(會先恢復螢幕再結束),或直接 Force Quit,看門狗會在約 1 秒內恢復。
+- 從遠端或 SSH:`pkill MacDisplayManager`(會先恢復螢幕再結束),或直接 Force Quit,看門狗會在約 1 秒內恢復。
 - 重新開啟 App(啟動時會恢復上次被停用的面板)。
 - 最後手段:重新開機。
 
@@ -69,7 +69,7 @@ open ScreenOff.app
 ## 檔案
 
 ```
-ScreenOffApp.swift   App 本體(UI、PanelController、MouseWatcher、看門狗)
+MacDisplayManagerApp.swift   App 本體(UI、PanelController、MouseWatcher、看門狗)
 build.sh             編譯、打包、簽署
 make-icon.swift      產生 AppIcon.icns 的腳本
 AppIcon.icns         App 圖示

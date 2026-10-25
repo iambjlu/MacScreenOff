@@ -30,19 +30,6 @@ func render(size: Int) -> Data {
         tinted.draw(in: NSRect(x: (s - w) / 2, y: (s - h) / 2 + s * 0.02, width: w, height: h))
     }
 
-    // 右下角電源鈕小圓點
-    let r = s * 0.095, c = CGPoint(x: s * 0.70, y: s * 0.27)
-    let dot = NSBezierPath(ovalIn: NSRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
-    NSColor(calibratedRed: 1.0, green: 0.36, blue: 0.36, alpha: 1).setFill(); dot.fill()
-    let line = NSBezierPath()
-    line.lineWidth = s * 0.016; line.lineCapStyle = .round
-    line.move(to: CGPoint(x: c.x, y: c.y + r * 0.05)); line.line(to: CGPoint(x: c.x, y: c.y + r * 0.6))
-    NSColor.white.setStroke(); line.stroke()
-    let arc = NSBezierPath()
-    arc.lineWidth = s * 0.016; arc.lineCapStyle = .round
-    arc.appendArc(withCenter: c, radius: r * 0.5, startAngle: 120, endAngle: 60, clockwise: false)
-    arc.stroke()
-
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
 }
