@@ -57,6 +57,8 @@ enum ResolutionCatalog {
 
 /// 建立一個虛擬顯示器,並讓主要顯示器鏡像它(虛擬顯示器為主,所以畫面與螢幕共享都用虛擬顯示器的解析度)。
 /// 虛擬顯示器隸屬於本行程,App 結束(含被殺掉)時系統會自動移除並解除鏡像。
+/// 同一個行程內釋放虛擬顯示器不會讓它消失,而且重建後鏡像會失敗,
+/// 所以只建立一次;換解析度時先解除鏡像、套用新模式、再重新鏡像。
 @MainActor
 final class VirtualDisplayController: ObservableObject {
     static let shared = VirtualDisplayController()
@@ -73,22 +75,21 @@ final class VirtualDisplayController: ObservableObject {
 
     var isActive: Bool { display != nil }
 
-    /// 建立虛擬顯示器,或換成新的解析度(會重建並重新鏡像)。
+    /// 建立虛擬顯示器,或換成新的解析度。
     func updateResolution(_ option: ResolutionOption) {
         message = nil
-        if display == nil { baseID = CGMainDisplayID() }
-        removeDisplay()
-
-        let descriptor = CGVirtualDisplayDescriptor()
-        descriptor.name = "MacDisplayManager 虛擬螢幕"
-        descriptor.vendorID = 0x3456
-        descriptor.productID = 0x1234
-        descriptor.serialNum = 1
-        descriptor.queue = DispatchQueue.main
-        descriptor.maxPixelsWide = UInt32(option.width)
-        descriptor.maxPixelsHigh = UInt32(option.height)
-        descriptor.sizeInMillimeters = CGSize(width: Double(option.width) / option.ppi * 25.4,
-                                              height: Double(option.height) / option.ppi * 25.4)
+        if display == nil {
+            baseID = CGMainDisplayID()
+            display = makeDisplay()
+            VirtualDisplayController.activeIDStorage.value = display?.displayID
+        } else {
+            _ = mirror(baseID, of: kCGNullDirectDisplay)
+        }
+        guard let virtual = display else {
+            message = "無法建立虛擬螢幕。"
+            current = nil
+            return
+        }
 
         // HiDPI 的模式以點(邏輯像素)表示:像素尺寸的一半,背板是 2 倍。
         let scale = option.isRetina ? 2 : 1
@@ -96,32 +97,41 @@ final class VirtualDisplayController: ObservableObject {
         settings.hiDPI = option.isRetina ? 1 : 0
         settings.modes = [CGVirtualDisplayMode(width: UInt(option.width / scale),
                                                height: UInt(option.height / scale), refreshRate: 60)]
-
-        guard let virtual = CGVirtualDisplay(descriptor: descriptor), virtual.apply(settings) else {
-            message = "無法建立虛擬螢幕(系統不支援這個解析度)。"
+        guard virtual.apply(settings) else {
+            message = "無法套用這個解析度。"
             current = nil
             return
         }
-        display = virtual
-        VirtualDisplayController.activeIDStorage.value = virtual.displayID
         current = option
         if !mirror(baseID, of: virtual.displayID) {
             message = "虛擬螢幕已建立,但無法與主要顯示器綁定。"
         }
     }
 
-    /// 移除虛擬顯示器並解除綁定。
+    /// 解除綁定並移除虛擬螢幕。虛擬顯示器只有行程結束才會消失,所以解除鏡像後重新啟動 App。
     func remove() {
-        message = nil
-        removeDisplay()
+        _ = mirror(baseID, of: kCGNullDirectDisplay)
         current = nil
+        display = nil
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
     }
 
-    private func removeDisplay() {
-        guard display != nil else { return }
-        _ = mirror(baseID, of: kCGNullDirectDisplay)
-        display = nil
-        VirtualDisplayController.activeIDStorage.value = nil
+    /// 以最大尺寸建立虛擬顯示器,各解析度都由模式決定。
+    private func makeDisplay() -> CGVirtualDisplay? {
+        let descriptor = CGVirtualDisplayDescriptor()
+        descriptor.name = "MacDisplayManager 虛擬螢幕"
+        descriptor.vendorID = 0x3456
+        descriptor.productID = 0x1234
+        descriptor.serialNum = 1
+        descriptor.queue = DispatchQueue.main
+        descriptor.maxPixelsWide = 7680
+        descriptor.maxPixelsHigh = 6582
+        descriptor.sizeInMillimeters = CGSize(width: 7680.0 / 255 * 25.4, height: 6582.0 / 255 * 25.4)
+        return CGVirtualDisplay(descriptor: descriptor)
     }
 
     /// 讓 `slave` 鏡像 `master`;`master` 為 kCGNullDirectDisplay 時解除鏡像。
@@ -160,7 +170,7 @@ struct VirtualDisplayView: View {
         VStack(spacing: 12) {
             Image(systemName: "display.2")
                 .font(.system(size: 44))
-            Text(controller.current.map { "虛擬螢幕:\($0.width)×\($0.height)" } ?? "尚未建立虛擬螢幕")
+            Text(verbatim: controller.current.map { "虛擬螢幕:\(String($0.width))×\(String($0.height))" } ?? "尚未建立虛擬螢幕")
                 .font(.title3.bold())
 
             HStack(spacing: 0) {
@@ -189,7 +199,7 @@ struct VirtualDisplayView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Button("移除虛擬螢幕") { controller.remove() }
+            Button("移除虛擬螢幕(會重新啟動 App)") { controller.remove() }
                 .disabled(!controller.isActive)
 
             Text("選擇解析度會新增虛擬螢幕並與主要顯示器綁定(鏡像);已存在時則換成新的解析度。結束 App 會自動移除。")

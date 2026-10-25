@@ -156,10 +156,12 @@ CLAUDE.md              專案規則
 ## VirtualDisplay.swift 與 CGVirtualDisplay.h
 - `CGVirtualDisplay.h`:宣告私有類別 `CGVirtualDisplay` / `Descriptor` / `Settings` / `Mode`(實作在 CoreGraphics),以 `-import-objc-header` 橋接給 Swift。
 - `ResolutionCatalog`:6 種長寬比(16:9、16:10、4:3、21:9、32:9、10.5:9),各有 5 個 Retina(ppi 255,2K 到 8K)與 10 個標準(ppi 105)解析度;`ResolutionOption.isRetina` 以 `ppi >= 200` 判斷。
-- `VirtualDisplayController`(MainActor 單例):`updateResolution(_:)` 先移除舊的虛擬顯示器,再依 `ResolutionOption` 建立新的(`maxPixelsWide/High` 為像素尺寸、`sizeInMillimeters` 由 ppi 換算;Retina 時 `hiDPI = 1`,模式為像素尺寸的一半),
-  接著用 `CGConfigureDisplayMirrorOfDisplay` 讓建立前的主要顯示器鏡像虛擬顯示器(虛擬顯示器為主,解析度與螢幕共享都以它為準)。`remove()` 解除鏡像並釋放。虛擬顯示器隸屬本行程,App 結束時系統自動移除。
+- `VirtualDisplayController`(MainActor 單例):虛擬顯示器只建立一次(`maxPixelsWide/High` 取最大 7680×6582),因為同一行程內釋放後它不會消失,而且重建後鏡像會失敗(錯誤 1001)。
+  `updateResolution(_:)`:已存在時先解除鏡像,再 `apply` 新的 `CGVirtualDisplaySettings`(Retina 時 `hiDPI = 1`,模式為像素尺寸的一半,背板 2 倍),最後用 `CGConfigureDisplayMirrorOfDisplay` 讓建立前的主要顯示器鏡像虛擬顯示器
+  (虛擬顯示器為主,解析度與螢幕共享都以它為準;鏡像期間 `CGMainDisplayID()` 會變成虛擬顯示器,所以主要顯示器 ID 在建立前記下)。
+  `remove()`:解除鏡像後重新啟動 App(虛擬顯示器隸屬本行程,行程結束系統才會移除)。
 - `VirtualDisplayController.activeID`:供其他功能排除虛擬顯示器。`refreshDisplays()` 不列出它,`activeExternalDisplayExists()` 不把它算成外接顯示器(否則建立虛擬螢幕會觸發「外接顯示器連接時關閉」)。
-- `VirtualDisplayView`(「虛擬螢幕」頁):兩層清單,左邊選長寬比,右邊分「Retina」與「標準解析度」兩區選解析度,目前的有勾選;另有「移除虛擬螢幕」按鈕。
+- `VirtualDisplayView`(「虛擬螢幕」頁):兩層清單,左邊選長寬比,右邊分「Retina」與「標準解析度」兩區選解析度,目前的有勾選;另有「移除虛擬螢幕(會重新啟動 App)」按鈕。
 
 ## build.sh
 1. 清掉舊 `MacDisplayManager.app`,建立 `Contents/MacOS` 與 `Contents/Resources`。
