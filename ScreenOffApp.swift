@@ -63,7 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
         let off = PanelController.shared.isActive
-        let item = NSMenuItem(title: off ? "重新開啟螢幕" : "關閉內建螢幕", action: #selector(toggleFromDock), keyEquivalent: "")
+        let item = NSMenuItem(title: off ? "重新開啟螢幕" : "關閉選定的螢幕", action: #selector(toggleFromDock), keyEquivalent: "")
         item.target = self
         menu.addItem(item)
         return menu
@@ -72,13 +72,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleFromDock() { Task { @MainActor in Model.shared.toggle() } }
 }
 
-/// 目前是否有作用中的非內建(外接)顯示器。
-func activeExternalDisplayExists() -> Bool {
+/// 目前作用中的顯示器 ID(已被停用的不在其中)。
+func activeDisplayIDs() -> [CGDirectDisplayID] {
     var count: UInt32 = 0
     CGGetActiveDisplayList(0, nil, &count)
     var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
     CGGetActiveDisplayList(count, &ids, &count)
-    return ids.prefix(Int(count)).contains { CGDisplayIsBuiltin($0) == 0 }
+    return Array(ids.prefix(Int(count)))
+}
+
+/// 目前是否有作用中的非內建(外接)顯示器。
+func activeExternalDisplayExists() -> Bool {
+    activeDisplayIDs().contains { CGDisplayIsBuiltin($0) == 0 }
+}
+
+/// 顯示器的穩定識別。重新連接或重開機後 CGDirectDisplayID 可能改變,UUID 不會。
+func displayUUID(_ id: CGDirectDisplayID) -> String? {
+    guard let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() else { return nil }
+    return CFUUIDCreateString(nil, uuid) as String?
+}
+
+func displayName(_ id: CGDirectDisplayID) -> String {
+    NSScreen.screens.first {
+        ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
+    }?.localizedName ?? "顯示器 \(id)"
+}
+
+/// 視窗列表中的一個螢幕。`connected == false` 表示目前未啟用(被關閉或沒連接)。
+struct DisplayInfo: Identifiable {
+    let uuid: String
+    let name: String
+    let isBuiltin: Bool
+    let connected: Bool
+    var id: String { uuid }
 }
 
 /// 顯示器組態變動時通知 Model(用來偵測外接螢幕被移除)。
@@ -124,16 +150,26 @@ final class Model: ObservableObject {
     private var suppressAutoOff = false
     /// 啟用「滑鼠移動或連線時也不開啟螢幕」前的三步確認視窗。
     @Published var showKeepOffConfirm = false
-    /// 關閉內建螢幕成功的當下是否有外接螢幕(用來判斷之後外接螢幕是不是被移除了)。
-    private var hadExternalAtOff = false
-    /// 接上外接顯示器時自動關閉內建顯示器;外接顯示器移除時自動恢復。
-    @Published var closeBuiltInWithExternal = UserDefaults.standard.bool(forKey: "closeBuiltInWithExternal") {
+    /// 關閉螢幕成功的當下是否還有其他作用中的螢幕(用來判斷之後其餘螢幕是不是全被移除了)。
+    private var hadOtherDisplayAtOff = false
+    /// 要關閉的螢幕(以顯示器 UUID 記憶)。尚未設定過時預設為內建螢幕。
+    @Published var selectedDisplays: Set<String> = {
+        let d = UserDefaults.standard
+        if let saved = d.array(forKey: "selectedDisplays") as? [String] { return Set(saved) }
+        let builtin = Set(activeDisplayIDs().filter { CGDisplayIsBuiltin($0) != 0 }.compactMap(displayUUID))
+        d.set(Array(builtin), forKey: "selectedDisplays")
+        return builtin
+    }()
+    /// 視窗列表:目前作用中的螢幕,加上選定但目前未啟用的螢幕。
+    @Published var displays: [DisplayInfo] = []
+    /// 接上外接顯示器時自動關閉選定的螢幕;外接顯示器移除時自動恢復。
+    @Published var closeSelectedWithExternal = UserDefaults.standard.bool(forKey: "closeBuiltInWithExternal") {
         didSet {
-            UserDefaults.standard.set(closeBuiltInWithExternal, forKey: "closeBuiltInWithExternal")
-            if closeBuiltInWithExternal { applyExternalRuleNow() } else { closedForExternal = false }
+            UserDefaults.standard.set(closeSelectedWithExternal, forKey: "closeBuiltInWithExternal")
+            if closeSelectedWithExternal { applyExternalRuleNow() } else { closedForExternal = false }
         }
     }
-    /// 內建顯示器是被「外接顯示器連接時,關閉內建顯示器」關閉的(只有這種情況外接移除時才自動恢復)。
+    /// 螢幕是被「外接顯示器連接時,關閉選定的螢幕」關閉的(只有這種情況外接移除時才自動恢復)。
     private var closedForExternal = false
     private var lastExternal = activeExternalDisplayExists()
     /// 啟用後,實體滑鼠 / 觸控板的操作與連線都不會開啟螢幕,也不再強制要求能用實體裝置喚醒(預設關閉)。
@@ -184,19 +220,71 @@ final class Model: ObservableObject {
         if isOff {
             wake()
         } else {
+            let targets = targetDisplayIDs()
+            guard !targets.isEmpty else {
+                message = selectedDisplays.isEmpty ? "尚未選擇要關閉的螢幕。" : "選定的螢幕目前沒有連接,無法關閉。"
+                return
+            }
             // 必要條件:能用實體滑鼠 / 觸控板喚醒。監聽啟動失敗就不關螢幕(手動與自動皆同)。
             guard keepOffOnInput || MouseWatcher.shared.start() else {
                 message = "無法監聽實體滑鼠 / 觸控板,已取消關閉(否則無法在本機喚醒螢幕)。"
                 return
             }
             busy = true
-            PanelController.shared.activate { [self] error in
+            PanelController.shared.activate(targets: targets) { [self] error in
                 busy = false
                 message = error
                 isOff = PanelController.shared.isActive
-                if isOff { hadExternalAtOff = activeExternalDisplayExists() } else { MouseWatcher.shared.stop() }
+                if isOff { hadOtherDisplayAtOff = !activeDisplayIDs().isEmpty } else { MouseWatcher.shared.stop() }
+                refreshDisplays()
             }
         }
+    }
+
+    // MARK: 要關閉的螢幕
+
+    private var knownNames: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: "displayNames") as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "displayNames") }
+    }
+
+    private var knownBuiltin: Set<String> {
+        get { Set(UserDefaults.standard.array(forKey: "displayBuiltin") as? [String] ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "displayBuiltin") }
+    }
+
+    /// 重新整理視窗列表,並記住各螢幕的名稱(被關閉後就拿不到名稱了)。
+    func refreshDisplays() {
+        var names = knownNames
+        var builtin = knownBuiltin
+        var list: [DisplayInfo] = []
+        var seen = Set<String>()
+        for id in activeDisplayIDs() {
+            guard let uuid = displayUUID(id) else { continue }
+            let isBuiltin = CGDisplayIsBuiltin(id) != 0
+            names[uuid] = displayName(id)
+            if isBuiltin { builtin.insert(uuid) }
+            seen.insert(uuid)
+            list.append(DisplayInfo(uuid: uuid, name: names[uuid] ?? "", isBuiltin: isBuiltin, connected: true))
+        }
+        for uuid in selectedDisplays where !seen.contains(uuid) {
+            list.append(DisplayInfo(uuid: uuid, name: names[uuid] ?? "未知的螢幕",
+                                    isBuiltin: builtin.contains(uuid), connected: false))
+        }
+        knownNames = names
+        knownBuiltin = builtin
+        displays = list
+    }
+
+    func setSelected(_ uuid: String, _ on: Bool) {
+        if on { selectedDisplays.insert(uuid) } else { selectedDisplays.remove(uuid) }
+        UserDefaults.standard.set(Array(selectedDisplays), forKey: "selectedDisplays")
+        refreshDisplays()
+    }
+
+    /// 目前作用中、且被選定要關閉的顯示器 ID。
+    private func targetDisplayIDs() -> [CGDirectDisplayID] {
+        activeDisplayIDs().filter { id in displayUUID(id).map(selectedDisplays.contains) ?? false }
     }
 
     /// 啟動時依「開啟 App 時」的設定決定螢幕狀態。AppDelegate 已先恢復面板,這裡延遲 2 秒再套用。
@@ -222,6 +310,7 @@ final class Model: ObservableObject {
 
     /// 啟動時依記住的設定開始監控。
     func bootstrap() {
+        refreshDisplays()
         updateMonitoring()
         // 外接顯示器在啟動時已經連著:等 3 秒(讓「開啟 App 時」的設定先套用)再依選項處理
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
@@ -277,31 +366,33 @@ final class Model: ObservableObject {
         toggle()
     }
 
-    /// 安全閥:「滑鼠移動或連線時也不開啟螢幕」開啟、且關螢幕時有外接螢幕,之後外接螢幕被移除,
-    /// 就恢復內建螢幕(否則系統會沒有任何螢幕,本機又無法喚醒)。
+    /// 顯示器組態變動(由 DisplayWatcher 在變動結束後呼叫)。
+    /// 安全閥:「滑鼠移動或連線時也不開啟螢幕」開啟、且關螢幕時還有其他螢幕,之後其餘螢幕全被移除,
+    /// 就恢復被關閉的螢幕(否則系統會沒有任何螢幕,本機又無法喚醒)。
     func displaysChanged() {
+        refreshDisplays()
         let external = activeExternalDisplayExists()
         let previous = lastExternal
         lastExternal = external
-        if isOff, keepOffOnInput, hadExternalAtOff, !external {
-            message = "外接螢幕已移除,已恢復內建螢幕。"
+        if isOff, keepOffOnInput, hadOtherDisplayAtOff, activeDisplayIDs().isEmpty {
+            message = "其餘螢幕已移除,已恢復被關閉的螢幕。"
             wake()
             return
         }
-        // 「外接顯示器連接時,關閉內建顯示器」:只對外接顯示器的有 / 無變化反應。
-        // (若每次組態變動都檢查,手動喚醒內建顯示器後會立刻又被關掉。)
-        guard closeBuiltInWithExternal, external != previous else { return }
+        // 「外接顯示器連接時,關閉選定的螢幕」:只對外接顯示器的有 / 無變化反應。
+        // (若每次組態變動都檢查,手動喚醒螢幕後會立刻又被關掉。)
+        guard closeSelectedWithExternal, external != previous else { return }
         if external {
             closeForExternal()
         } else if isOff && closedForExternal {
-            message = "外接顯示器已移除,已恢復內建顯示器。"
+            message = "外接顯示器已移除,已恢復被關閉的螢幕。"
             wake()
         }
     }
 
     /// 開啟選項、或啟動時外接顯示器已連著:依狀態處理一次。
     private func applyExternalRuleNow() {
-        guard closeBuiltInWithExternal, activeExternalDisplayExists() else { return }
+        guard closeSelectedWithExternal, activeExternalDisplayExists() else { return }
         closeForExternal()
     }
 
@@ -318,7 +409,7 @@ final class Model: ObservableObject {
         wake()
     }
 
-    /// 還原內建螢幕(視窗、Dock 選單、實體滑鼠皆走這裡)。
+    /// 還原被關閉的螢幕(視窗、Dock 選單、實體滑鼠皆走這裡)。
     func wake() {
         guard isOff else { return }
         closedForExternal = false
@@ -481,10 +572,10 @@ struct ContentView: View {
         VStack(spacing: 12) {
             Image(systemName: model.isOff ? "display.slash" : "display")
                 .font(.system(size: 44))
-            Text(model.isOff ? "內建螢幕已關閉" : "內建螢幕開啟中")
+            Text(model.isOff ? "選定的螢幕已關閉" : "螢幕開啟中")
                 .font(.title3.bold())
 
-            Button(model.isOff ? "重新開啟螢幕" : "關閉內建螢幕") { model.toggle() }
+            Button(model.isOff ? "重新開啟螢幕" : "關閉選定的螢幕") { model.toggle() }
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.large)
                 .disabled(model.busy)
@@ -498,6 +589,23 @@ struct ContentView: View {
             }
 
             Form {
+                Section {
+                    ForEach(model.displays) { d in
+                        Toggle(isOn: Binding(
+                            get: { model.selectedDisplays.contains(d.uuid) },
+                            set: { model.setSelected(d.uuid, $0) }
+                        )) {
+                            Text(d.name + (d.isBuiltin ? "(內建)" : "") + (d.connected ? "" : "(目前未啟用)"))
+                        }
+                        .disabled(model.isOff || model.busy)
+                    }
+                } header: {
+                    Text("要關閉的螢幕")
+                } footer: {
+                    Text("手動按鈕、自動關閉與啟動時的關閉,都只會關閉這裡選定的螢幕。螢幕關閉期間不能更改。")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 Section {
                     Toggle("連線時自動開啟螢幕", isOn: Binding(
                         get: { model.onConnectWake },
@@ -520,11 +628,11 @@ struct ContentView: View {
                 }
 
                 Section {
-                    Toggle("外接顯示器連接時,關閉內建顯示器", isOn: $model.closeBuiltInWithExternal)
+                    Toggle("外接顯示器連接時,關閉選定的螢幕", isOn: $model.closeSelectedWithExternal)
                 } header: {
                     Text("外接顯示器")
                 } footer: {
-                    Text("接上外接顯示器時自動關閉內建顯示器,外接顯示器移除後自動恢復。")
+                    Text("接上外接顯示器時自動關閉選定的螢幕,外接顯示器移除後自動恢復。")
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -539,20 +647,20 @@ struct ContentView: View {
             }
             .formStyle(.grouped)
             .toggleStyle(.switch)
+            .onAppear { model.refreshDisplays() }
             .alert("要關閉「連線時自動開啟螢幕」嗎?", isPresented: $model.confirmDisableConnectWake) {
                 Button("關閉", role: .destructive) { model.onConnectWake = false }
                 Button("取消", role: .cancel) {}
             } message: {
                 Text("關閉後,滑鼠或觸控板連線時不會自動開啟螢幕。移動實體滑鼠 / 觸控板、遠端按「重新開啟螢幕」或結束 App 仍可恢復。")
             }
-            .scrollDisabled(true)
             .sheet(isPresented: $model.showKeepOffConfirm) {
                 KeepOffConfirmView(
                     onConfirm: { model.keepOffOnInput = true; model.showKeepOffConfirm = false },
                     onCancel: { model.showKeepOffConfirm = false }
                 )
             }
-            .frame(height: 460)
+            .frame(height: 380)
 
             Text(model.keepOffOnInput
                  ? "本機喚醒已停用:移動滑鼠或連線都不會開啟螢幕。請用遠端按「重新開啟螢幕」或結束 App 恢復。"
@@ -620,7 +728,7 @@ final class PanelController {
         guard sleepAssertion == 0 else { return }
         IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
                                     IOPMAssertionLevel(kIOPMAssertionLevelOn),
-                                    "ScreenOff: built-in display disabled" as CFString,
+                                    "ScreenOff: selected display(s) disabled" as CFString,
                                     &sleepAssertion)
     }
 
@@ -641,32 +749,23 @@ final class PanelController {
 
     var isActive: Bool { !disabledIDs.isEmpty }
 
-    private var builtInDisplays: [CGDirectDisplayID] {
-        var count: UInt32 = 0
-        CGGetActiveDisplayList(0, nil, &count)
-        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
-        CGGetActiveDisplayList(count, &ids, &count)
-        return ids.filter { CGDisplayIsBuiltin($0) != 0 }
-    }
-
-    /// 直接停用內建面板,不建立虛擬顯示器。實體滑鼠有動作時由 MouseWatcher 觸發 restore()。
-    func activate(completion: @escaping (String?) -> Void) {
-        guard let enableFn else { return completion("找不到 CGSConfigureDisplayEnabled,無法停用面板") }
-        let builtIns = builtInDisplays
-        guard !builtIns.isEmpty else { return completion("找不到內建顯示器") }
+    /// 直接停用指定的顯示器,不建立虛擬顯示器。實體滑鼠有動作時由 MouseWatcher 觸發 restore()。
+    func activate(targets: [CGDirectDisplayID], completion: @escaping (String?) -> Void) {
+        guard let enableFn else { return completion("找不到 CGSConfigureDisplayEnabled,無法停用螢幕") }
+        guard !targets.isEmpty else { return completion("找不到要關閉的螢幕") }
 
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success else { return completion("無法開始顯示器設定") }
-        for id in builtIns { _ = enableFn(config, id, false) }
+        for id in targets { _ = enableFn(config, id, false) }
         if CGCompleteDisplayConfiguration(config, .forAppOnly) == .success {
-            disabledIDs = builtIns
-            UserDefaults.standard.set(builtIns.map(Int.init), forKey: Self.savedKey)
-            startWatchdog(builtIns)
+            disabledIDs = targets
+            UserDefaults.standard.set(targets.map(Int.init), forKey: Self.savedKey)
+            startWatchdog(targets)
             holdAwake()
             completion(nil)
         } else {
             CGCancelDisplayConfiguration(config)
-            completion("停用內建面板失敗(系統可能不允許停用最後一個顯示器)")
+            completion("停用螢幕失敗(系統可能不允許停用最後一個顯示器)")
         }
     }
 
